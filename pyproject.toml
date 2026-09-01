@@ -1,0 +1,56 @@
+[build-system]
+requires = ["uv-build>=0.5.0, <0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "actis"
+version = "0.1.0"
+description = "Adaptive Cascade Tuning via Importance Sampling"
+readme = "README.md"
+authors = [
+    {name = "Neil Marchant", email = "nmarchant@unimelb.edu.au"},
+]
+license = { "file"= "LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+]
+
+dependencies = [
+    "numpy>=1.25.0,<2.0.0",
+    "confseq",
+    "scipy",
+    "pybind11>=2.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.7.2",
+    "pytest>=8.0.0",
+]
+experiments = [
+    "plotnine",
+    "datasets>=2.0.0",
+    "bargain @ git+https://github.com/ucbepic/BARGAIN.git@3502b1a4ffa33ae5e5e99edecada8a127f222a58",
+    "lotus-ai==1.2.4",
+]
+
+[tool.uv]
+no-build-isolation-package = ["confseq"]
+override-dependencies = [
+    "pybind11>=2.12.0",
+]
+
+[tool.uv.extra-build-dependencies]
+confseq = ["setuptools", "scikit-build"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+# Active linting rules (Errors, Flake8, Isort imports, Warnings)
+select = ["E", "F", "I", "W"]
