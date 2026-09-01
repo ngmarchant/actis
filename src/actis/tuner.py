@@ -6,7 +6,12 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from .confseq import eval_asymptotic_wealth, eval_betting_wealth
+from .confseq import (
+    AsymptoticSupermartingale,
+    BettingSupermartingale,
+    eval_asymptotic_wealth,
+    eval_betting_wealth,
+)
 
 
 @dataclass
@@ -172,6 +177,215 @@ class ACTIS:
             predicted_oracle_rate=None,
         )
 
+        # Stateful supermartingale memoization caches (keyed by threshold value: float)
+        self.recall_marts: dict[float, AsymptoticSupermartingale | BettingSupermartingale] = {}
+        self.recall_opt_marts: dict[float, AsymptoticSupermartingale | BettingSupermartingale] = {}
+        self.precision_marts: dict[float, AsymptoticSupermartingale | BettingSupermartingale] = {}
+        self.precision_opt_marts: dict[float, AsymptoticSupermartingale | BettingSupermartingale] = {}
+        self.last_tau_lower: float | None = None
+        self.last_tau_neg_opt: float | None = None
+
+    def _create_recall_mart(self, k: int) -> AsymptoticSupermartingale | BettingSupermartingale:
+        if self.conf_seq == "asymptotic":
+            return AsymptoticSupermartingale(m=0.0, v0=self.v0)
+        else:
+            max_weight_ge_k = (
+                float(self.max_weight_ge[k])
+                if self.max_weight_ge is not None
+                else 1.0
+            )
+            if self.max_weight_lt is not None:
+                max_weight_lt_k = float(self.max_weight_lt[k])
+            elif k == 0:
+                max_weight_lt_k = 0.0
+            else:
+                first_max_weight_ge = (
+                    float(self.max_weight_ge[0])
+                    if self.max_weight_ge is not None
+                    else 1.0
+                )
+                max_weight_lt_k = first_max_weight_ge
+
+            shift_R = self.gamma_R * max_weight_lt_k
+            width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
+            target_mean = (shift_R / width_R) if width_R > 0 else 0.0
+
+            return BettingSupermartingale(
+                m=target_mean,
+                alpha=self.delta_R,
+                population_size=self.pop_size,
+                horizon=self.horizon,
+            )
+
+    def _create_recall_opt_mart(self, k: int) -> BettingSupermartingale:
+        max_weight_ge_k = (
+            float(self.max_weight_ge[k])
+            if self.max_weight_ge is not None
+            else 1.0
+        )
+        if self.max_weight_lt is not None:
+            max_weight_lt_k = float(self.max_weight_lt[k])
+        elif k == 0:
+            max_weight_lt_k = 0.0
+        else:
+            first_max_weight_ge = (
+                float(self.max_weight_ge[0])
+                if self.max_weight_ge is not None
+                else 1.0
+            )
+            max_weight_lt_k = first_max_weight_ge
+
+        shift_R = self.gamma_R * max_weight_lt_k
+        width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
+        target_mean = (shift_R / width_R) if width_R > 0 else 0.0
+
+        return BettingSupermartingale(
+            m=target_mean,
+            alpha=self.delta_R,
+            population_size=self.pop_size,
+            horizon=self.horizon,
+            reverse=True,
+        )
+
+    def _get_recall_rvs(
+        self,
+        k: int,
+        scores: NDArray[np.float64],
+        labels: NDArray[np.bool_],
+        weights: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        tau = self.thresholds[k]
+        is_above_tau = (scores >= tau).astype(np.float64)
+        unscaled_rvs = weights * labels * (is_above_tau - self.gamma_R)
+
+        if self.conf_seq == "asymptotic":
+            return unscaled_rvs
+        else:
+            max_weight_ge_k = (
+                float(self.max_weight_ge[k])
+                if self.max_weight_ge is not None
+                else 1.0
+            )
+            if self.max_weight_lt is not None:
+                max_weight_lt_k = float(self.max_weight_lt[k])
+            elif k == 0:
+                max_weight_lt_k = 0.0
+            else:
+                first_max_weight_ge = (
+                    float(self.max_weight_ge[0])
+                    if self.max_weight_ge is not None
+                    else 1.0
+                )
+                max_weight_lt_k = first_max_weight_ge
+
+            shift_R = self.gamma_R * max_weight_lt_k
+            width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
+            if width_R > 0:
+                return (unscaled_rvs + shift_R) / width_R
+            return np.zeros_like(unscaled_rvs)
+
+    def _create_precision_mart(
+        self,
+        k_upper: int,
+        max_weight_ge_lower: float,
+    ) -> AsymptoticSupermartingale | BettingSupermartingale:
+        if self.conf_seq == "asymptotic":
+            return AsymptoticSupermartingale(m=0.0, v0=self.v0)
+        else:
+            max_weight_ge_upper_k = (
+                float(self.max_weight_ge_upper[k_upper])
+                if self.max_weight_ge_upper is not None
+                else 1.0
+            )
+            shift_P = self.gamma_P * max_weight_ge_upper_k
+            width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
+            target_mean = (shift_P / width_P) if width_P > 0 else 0.0
+
+            return BettingSupermartingale(
+                m=target_mean,
+                alpha=self.delta_P / self.M_lower,
+                population_size=self.pop_size,
+                horizon=self.horizon,
+            )
+
+    def _create_precision_opt_mart(
+        self,
+        k_upper: int,
+        max_weight_ge_lower: float,
+    ) -> BettingSupermartingale:
+        max_weight_ge_up = (
+            float(self.max_weight_ge_upper[k_upper])
+            if self.max_weight_ge_upper is not None
+            else 1.0
+        )
+        shift_P = self.gamma_P * max_weight_ge_up
+        width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
+        target_mean = (shift_P / width_P) if width_P > 0 else 0.0
+
+        return BettingSupermartingale(
+            m=target_mean,
+            alpha=self.delta_P / self.M_lower,
+            population_size=self.pop_size,
+            horizon=self.horizon,
+            reverse=True,
+        )
+
+    def _get_precision_rvs(
+        self,
+        k_upper: int,
+        tau_lower: float,
+        max_weight_ge_lower: float,
+        scores: NDArray[np.float64],
+        labels: NDArray[np.bool_],
+        weights: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        tau_upper = self.thresholds_upper[k_upper]
+        is_true_pos = labels & (scores >= tau_lower)
+        is_false_pos = (~labels) & (scores >= tau_upper)
+        unscaled_rvs = weights * (
+            (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
+        )
+
+        if self.conf_seq == "asymptotic":
+            return unscaled_rvs
+        else:
+            max_weight_ge_upper_k = (
+                float(self.max_weight_ge_upper[k_upper])
+                if self.max_weight_ge_upper is not None
+                else 1.0
+            )
+            shift_P = self.gamma_P * max_weight_ge_upper_k
+            width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
+            if width_P > 0:
+                return (unscaled_rvs + shift_P) / width_P
+            return np.zeros_like(unscaled_rvs)
+
+    def _update_mart_to_current(
+        self,
+        mart: AsymptoticSupermartingale | BettingSupermartingale,
+        get_rvs_fn,
+        all_scores: NDArray[np.float64],
+        all_labels: NDArray[np.bool_],
+        all_weights: NDArray[np.float64],
+        batch_scores: NDArray[np.float64],
+        batch_labels: NDArray[np.bool_],
+        batch_weights: NDArray[np.float64],
+    ) -> None:
+        current_n = len(all_scores)
+        mart_n = mart.n if isinstance(mart, AsymptoticSupermartingale) else mart.t
+
+        if mart_n == current_n:
+            return
+        elif mart_n == current_n - len(batch_scores):
+            batch_rvs = get_rvs_fn(batch_scores, batch_labels, batch_weights)
+            mart.update(batch_rvs)
+        else:
+            remaining_scores = all_scores[mart_n:]
+            remaining_labels = all_labels[mart_n:]
+            remaining_weights = all_weights[mart_n:]
+            rvs = get_rvs_fn(remaining_scores, remaining_labels, remaining_weights)
+            mart.update(rvs)
+
     def add_samples(
         self,
         indices: Sequence[int] | NDArray[np.integer],
@@ -234,7 +448,19 @@ class ACTIS:
                 )
             self.weights_list.extend(repeat(1.0, len(scores)))
 
-        tau_upper, tau_lower = self._tune_thresholds()
+        batch_scores = np.asarray(scores, dtype=np.float64)
+        batch_labels = np.asarray(labels, dtype=bool)
+        batch_weights = (
+            np.asarray(weights, dtype=np.float64)
+            if weights is not None
+            else np.ones(len(scores), dtype=np.float64)
+        )
+
+        tau_upper, tau_lower = self._tune_thresholds(
+            batch_scores=batch_scores,
+            batch_labels=batch_labels,
+            batch_weights=batch_weights,
+        )
 
         predicted_oracle_rate = None
         if population_scores is not None:
@@ -254,6 +480,9 @@ class ACTIS:
 
     def _tune_thresholds(
         self,
+        batch_scores: NDArray[np.float64] | None = None,
+        batch_labels: NDArray[np.bool_] | None = None,
+        batch_weights: NDArray[np.float64] | None = None,
     ) -> tuple[float, float]:
         r"""Evaluates the test supermartingales across candidate threshold grids to find
         the optimal pair of thresholds
@@ -265,110 +494,88 @@ class ACTIS:
         all_labels = np.asarray(self.labels_list, dtype=bool)
         all_weights = np.asarray(self.weights_list, dtype=np.float64)
 
+        if batch_scores is None:
+            batch_scores = all_scores
+            batch_labels = all_labels
+            batch_weights = all_weights
+
         # 1. Recall check (conservative lower bound)
-        def check_recall_target(k: int) -> bool:
-            tau = self.thresholds[k]
-            is_above_tau = (all_scores >= tau).astype(np.float64)
-            unscaled_rvs = all_weights * all_labels * (is_above_tau - self.gamma_R)
-
-            if self.conf_seq == "asymptotic":
-                wealth = eval_asymptotic_wealth(unscaled_rvs, m=0.0, prior_var=self.v0)
-                return wealth > (1.0 / self.delta_R)
-            else:
-                max_weight_ge_k = (
-                    float(self.max_weight_ge[k])
-                    if self.max_weight_ge is not None
-                    else 1.0
-                )
-                if self.max_weight_lt is not None:
-                    max_weight_lt_k = float(self.max_weight_lt[k])
-                elif k == 0:
-                    max_weight_lt_k = 0.0
-                else:
-                    first_max_weight_ge = (
-                        float(self.max_weight_ge[0])
-                        if self.max_weight_ge is not None
-                        else 1.0
-                    )
-                    max_weight_lt_k = first_max_weight_ge
-
-                shift_R = self.gamma_R * max_weight_lt_k
-                width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
-
-                if width_R > 0:
-                    f_R = (unscaled_rvs + shift_R) / width_R
-                    target_mean = shift_R / width_R
-                    wealth = eval_betting_wealth(
-                        f_R,
-                        m=target_mean,
-                        alpha=self.delta_R,
-                        population_size=self.pop_size,
-                        horizon=self.horizon,
-                    )
-                    return wealth > (1.0 / self.delta_R)
-                return True
-
         tau_lower = float(self.thresholds[0])
         max_weight_ge_lower = (
             float(self.max_weight_ge[0])
             if self.max_weight_ge is not None
             else 1.0
         )
-        for k in range(self.M_lower):
-            if check_recall_target(k):
-                tau_lower = float(self.thresholds[k])
+
+        for k, tau in enumerate(self.thresholds):
+            tau_val = float(tau)
+            if tau_val not in self.recall_marts:
+                self.recall_marts[tau_val] = self._create_recall_mart(k)
+
+            mart = self.recall_marts[tau_val]
+            self._update_mart_to_current(
+                mart,
+                lambda s, l, w, k=k: self._get_recall_rvs(k, s, l, w),
+                all_scores,
+                all_labels,
+                all_weights,
+                batch_scores,
+                batch_labels,
+                batch_weights,
+            )
+
+            if mart.wealth() > (1.0 / self.delta_R):
+                tau_lower = tau_val
                 if self.max_weight_ge is not None:
                     max_weight_ge_lower = float(self.max_weight_ge[k])
             else:
+                # Stop at first failure!
                 break
 
         # 2. Precision check (conservative lower bound)
-        def check_precision_target(k: int) -> bool:
-            tau_upper = self.thresholds_upper[k]
-            is_true_pos = all_labels & (all_scores >= tau_lower)
-            is_false_pos = (~all_labels) & (all_scores >= tau_upper)
-            unscaled_rvs = all_weights * (
-                (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
-            )
-
-            if self.conf_seq == "asymptotic":
-                wealth = eval_asymptotic_wealth(unscaled_rvs, m=0.0, prior_var=self.v0)
-                return wealth > (float(self.M_lower) / self.delta_P)
-            else:
-                max_weight_ge_upper_k = (
-                    float(self.max_weight_ge_upper[k])
-                    if self.max_weight_ge_upper is not None
-                    else 1.0
-                )
-
-                shift_P = self.gamma_P * max_weight_ge_upper_k
-                width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
-
-                if width_P > 0:
-                    f_P = (unscaled_rvs + shift_P) / width_P
-                    target_mean = shift_P / width_P
-                    wealth = eval_betting_wealth(
-                        f_P,
-                        m=target_mean,
-                        alpha=self.delta_P / self.M_lower,
-                        population_size=self.pop_size,
-                        horizon=self.horizon,
-                    )
-                    return wealth > (float(self.M_lower) / self.delta_P)
-                return True
+        if tau_lower != self.last_tau_lower:
+            self.precision_marts.clear()
+            self.last_tau_lower = tau_lower
 
         tau_upper = float(self.thresholds_upper[-1])
         for k in range(self.M_upper - 1, -1, -1):
-            if self.thresholds_upper[k] < tau_lower:
+            tau_val = float(self.thresholds_upper[k])
+            if tau_val < tau_lower:
                 break
-            if check_precision_target(k):
-                tau_upper = float(self.thresholds_upper[k])
+
+            if tau_val not in self.precision_marts:
+                self.precision_marts[tau_val] = self._create_precision_mart(
+                    k, max_weight_ge_lower
+                )
+
+            mart = self.precision_marts[tau_val]
+            self._update_mart_to_current(
+                mart,
+                lambda s, l, w, k=k: self._get_precision_rvs(
+                    k, tau_lower, max_weight_ge_lower, s, l, w
+                ),
+                all_scores,
+                all_labels,
+                all_weights,
+                batch_scores,
+                batch_labels,
+                batch_weights,
+            )
+
+            if mart.wealth() > (float(self.M_lower) / self.delta_P):
+                tau_upper = tau_val
             else:
+                # Stop at first failure!
                 break
 
         return tau_upper, tau_lower
 
-    def compute_optimistic_thresholds(self) -> tuple[float, float]:
+    def compute_optimistic_thresholds(
+        self,
+        batch_scores: NDArray[np.float64] | None = None,
+        batch_labels: NDArray[np.bool_] | None = None,
+        batch_weights: NDArray[np.float64] | None = None,
+    ) -> tuple[float, float]:
         r"""Computes the best-case (optimistic) candidate thresholds within the anytime
         confidence bounds on recall and precision margins.
 
@@ -391,121 +598,115 @@ class ACTIS:
             else np.ones(n_draws, dtype=np.float64)
         )
 
+        if batch_scores is None:
+            batch_scores = all_scores
+            batch_labels = all_labels
+            batch_weights = all_weights
+
         # 1. Optimistic Recall Threshold (tau_neg_opt)
         opt_neg_idx = 0
         for k, tau in enumerate(self.thresholds):
-            is_above_tau = (all_scores >= tau).astype(np.float64)
-            unscaled_rvs = all_weights * all_labels * (is_above_tau - self.gamma_R)
+            tau_val = float(tau)
 
             if self.conf_seq == "asymptotic":
-                mu_hat = float(np.mean(unscaled_rvs))
-                v_n = float(np.sum((unscaled_rvs - mu_hat) ** 2))
-                denom_log = 0.5 * np.log(1.0 + v_n / self.v0)
-                rad = (1.0 / n_draws) * np.sqrt(
-                    2.0 * (self.v0 + v_n) * (np.log(1.0 / self.delta_R) + denom_log)
+                if tau_val not in self.recall_marts:
+                    self.recall_marts[tau_val] = self._create_recall_mart(k)
+                mart = self.recall_marts[tau_val]
+                self._update_mart_to_current(
+                    mart,
+                    lambda s, l, w, k=k: self._get_recall_rvs(k, s, l, w),
+                    all_scores,
+                    all_labels,
+                    all_weights,
+                    batch_scores,
+                    batch_labels,
+                    batch_weights,
                 )
-                # Upper Confidence Bound on recall margin
-                if mu_hat + rad >= 0.0:
+                if mart.upper_confidence_bound(self.delta_R) >= 0.0:
                     opt_neg_idx = k
                 else:
                     break
             else:
-                max_weight_ge_k = (
-                    float(self.max_weight_ge[k])
-                    if self.max_weight_ge is not None
-                    else 1.0
+                if tau_val not in self.recall_opt_marts:
+                    self.recall_opt_marts[tau_val] = self._create_recall_opt_mart(k)
+                mart = self.recall_opt_marts[tau_val]
+                self._update_mart_to_current(
+                    mart,
+                    lambda s, l, w, k=k: self._get_recall_rvs(k, s, l, w),
+                    all_scores,
+                    all_labels,
+                    all_weights,
+                    batch_scores,
+                    batch_labels,
+                    batch_weights,
                 )
-                if self.max_weight_lt is not None:
-                    max_weight_lt_k = float(self.max_weight_lt[k])
-                elif k == 0:
-                    max_weight_lt_k = 0.0
-                else:
-                    first_max_weight_ge = (
-                        float(self.max_weight_ge[0])
-                        if self.max_weight_ge is not None
-                        else 1.0
-                    )
-                    max_weight_lt_k = first_max_weight_ge
-
-                shift_R = self.gamma_R * max_weight_lt_k
-                width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
-
-                if width_R > 0:
-                    f_R = (unscaled_rvs + shift_R) / width_R
-                    target_mean = shift_R / width_R
-                    # Lower-tailed non-rejection test: H0: mean >= target_mean
-                    wealth_rev = eval_betting_wealth(
-                        1.0 - f_R,
-                        m=1.0 - target_mean,
-                        alpha=self.delta_R,
-                        population_size=self.pop_size,
-                        horizon=self.horizon,
-                    )
-                    if wealth_rev <= (1.0 / self.delta_R):
-                        opt_neg_idx = k
-                    else:
-                        break
-                else:
+                if mart.wealth() <= (1.0 / self.delta_R):
                     opt_neg_idx = k
+                else:
+                    break
 
         tau_neg_opt = float(self.thresholds[opt_neg_idx])
+        max_weight_ge_low = (
+            float(self.max_weight_ge[opt_neg_idx])
+            if self.max_weight_ge is not None
+            else 1.0
+        )
 
         # 2. Optimistic Precision Threshold (tau_pos_opt)
+        if tau_neg_opt != self.last_tau_neg_opt:
+            self.precision_opt_marts.clear()
+            self.last_tau_neg_opt = tau_neg_opt
+
         opt_pos_idx = self.M_upper - 1
         for k in range(self.M_upper - 1, -1, -1):
-            tau = self.thresholds_upper[k]
-            if tau < tau_neg_opt:
+            tau_val = float(self.thresholds_upper[k])
+            if tau_val < tau_neg_opt:
                 break
-            is_true_pos = all_labels & (all_scores >= tau_neg_opt)
-            is_false_pos = (~all_labels) & (all_scores >= tau)
-            unscaled_rvs = all_weights * (
-                (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
-            )
 
             if self.conf_seq == "asymptotic":
-                mu_hat = float(np.mean(unscaled_rvs))
-                v_n = float(np.sum((unscaled_rvs - mu_hat) ** 2))
-                denom_log = 0.5 * np.log(1.0 + v_n / self.v0)
-                rad = (1.0 / n_draws) * np.sqrt(
-                    2.0 * (self.v0 + v_n) *
-                    (np.log(self.M_lower / self.delta_P) + denom_log)
+                if tau_val not in self.precision_opt_marts:
+                    self.precision_opt_marts[tau_val] = AsymptoticSupermartingale(
+                        m=0.0, v0=self.v0
+                    )
+                mart = self.precision_opt_marts[tau_val]
+                self._update_mart_to_current(
+                    mart,
+                    lambda s, l, w, k=k: self._get_precision_rvs(
+                        k, tau_neg_opt, max_weight_ge_low, s, l, w
+                    ),
+                    all_scores,
+                    all_labels,
+                    all_weights,
+                    batch_scores,
+                    batch_labels,
+                    batch_weights,
                 )
-                # Upper Confidence Bound on precision margin
-                if mu_hat + rad >= 0.0:
+                if mart.upper_confidence_bound(self.delta_P / self.M_lower) >= 0.0:
                     opt_pos_idx = k
                 else:
                     break
             else:
-                max_weight_ge_up = (
-                    float(self.max_weight_ge_upper[k])
-                    if self.max_weight_ge_upper is not None
-                    else 1.0
-                )
-                max_weight_ge_low = (
-                    float(self.max_weight_ge[opt_neg_idx])
-                    if self.max_weight_ge is not None
-                    else 1.0
-                )
-                shift_P = self.gamma_P * max_weight_ge_up
-                width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_low
-
-                if width_P > 0:
-                    f_P = (unscaled_rvs + shift_P) / width_P
-                    target_mean = shift_P / width_P
-                    # Lower-tailed non-rejection test: H0: mean >= target_mean
-                    wealth_rev = eval_betting_wealth(
-                        1.0 - f_P,
-                        m=1.0 - target_mean,
-                        alpha=self.delta_P / self.M_lower,
-                        population_size=self.pop_size,
-                        horizon=self.horizon,
+                if tau_val not in self.precision_opt_marts:
+                    self.precision_opt_marts[tau_val] = self._create_precision_opt_mart(
+                        k, max_weight_ge_low
                     )
-                    if wealth_rev <= (float(self.M_lower) / self.delta_P):
-                        opt_pos_idx = k
-                    else:
-                        break
-                else:
+                mart = self.precision_opt_marts[tau_val]
+                self._update_mart_to_current(
+                    mart,
+                    lambda s, l, w, k=k: self._get_precision_rvs(
+                        k, tau_neg_opt, max_weight_ge_low, s, l, w
+                    ),
+                    all_scores,
+                    all_labels,
+                    all_weights,
+                    batch_scores,
+                    batch_labels,
+                    batch_weights,
+                )
+                if mart.wealth() <= (float(self.M_lower) / self.delta_P):
                     opt_pos_idx = k
+                else:
+                    break
 
         tau_pos_opt = float(self.thresholds_upper[opt_pos_idx])
         return tau_pos_opt, tau_neg_opt
