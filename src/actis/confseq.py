@@ -1,100 +1,165 @@
 import math
-from collections.abc import Sequence
+from abc import ABC, abstractmethod
 
 import numpy as np
-from confseq.betting import diversified_betting_mart
-from confseq.betting_strategies import lambda_predmix_eb
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike
 
 
-class AsymptoticSupermartingale:
-    r"""Stateful asymptotic Gaussian mixture test supermartingale (Howard et al. 2021).
+class TestSupermartingale(ABC):
+    r"""Abstract base class for stateful sequential test supermartingales.
 
-    For observations $x_1, \dots, x_n \in \mathbb{R}$ against null mean $m$, tracks
-    empirical sum $S_n = \sum (x_i - m)$ and variance accumulator
-    $V_n = \sum (x_i - \bar{x})^2$.
+    A test supermartingale $(M_t)_{t \ge 0}$ tracks evidence against a null hypothesis
+    $H_0: \mu \le m$ (or $H_0: \mu = m$), starting at $M_0 \le 1$ and satisfying
+    $$\mathbb{E}[M_t \mid \mathcal{F}_{t-1}] \le M_{t-1}$$
+    under $H_0$.
 
-    The wealth process is:
-    $$
-        M_n(m) = \sqrt{\frac{v_0}{v_0 + V_n}} \exp\left(
-            \frac{(\max(0, S_n))^2}{2(v_0 + V_n)}
-        \right)
-    $$
+    Evidence against $H_0$ is measured by the accumulated wealth $M_t$, where
+    $M_t \ge 1/\alpha$ rejects $H_0$ with anytime-valid Type I error rate $\le \alpha$
+    via Ville's inequality:
+    $$\mathbb{P}_{H_0}(\exists t \ge 1: M_t \ge 1/\alpha) \le \alpha$$.
     """
 
-    def __init__(self, m: float = 0.0, v0: float = 1.0):
-        """
+    def __init__(self, m: float = 0.0, reverse: bool = False) -> None:
+        r"""
         Args:
-            m: Candidate mean under the null hypothesis (default: 0.0).
-            v0: Prior variance parameter (default: 1.0).
+            m: Mean $m$ in the null hypothesis (default: 0.0).
+            reverse: If False (default), tests $H_0: \mu \le m$ vs $H_1: \mu > m$
+                (right-tailed). If True, tests $H_0: \mu \ge m$ vs $H_1: \mu < m$
+                (left-tailed).
         """
         self.m = float(m)
+        self.reverse = bool(reverse)
+        self.t = 0
+        self.running_sum = 0.0
+
+    def update(self, x: ArrayLike) -> None:
+        """Updates internal state with a new batch of observations.
+
+        Args:
+            x: New batch of observations (1D array-like).
+        """
+        x = np.asarray(x, dtype=np.float64)
+        self.t += len(x)
+        self.running_sum += float(np.sum(x))
+
+    def mean_estimate(self) -> float:
+        """Returns the current estimate of the mean."""
+        if self.t == 0:
+            return float("nan")
+        return self.running_sum / self.t
+
+    @abstractmethod
+    def log_wealth(self) -> float:
+        r"""Returns the log terminal wealth $\log M_t$ against the null hypothesis.
+
+        The null hypothesis is rejected at level $\alpha$ when
+        $\log M_t \ge -\log \alpha$.
+        """
+        pass
+
+    @abstractmethod
+    def wealth(self) -> float:
+        r"""Returns the current terminal wealth $M_t$ against the null hypothesis.
+
+        The null hypothesis is rejected at level $\alpha$ when $M_t \ge 1/\alpha$.
+        """
+        pass
+
+
+class GaussianMixtureSupermartingale(TestSupermartingale):
+    r"""Stateful Gaussian mixture test supermartingale.
+
+    Tests the one-sided null hypothesis:
+    $$
+        H_0: \mu \le m \quad \text{vs.} \quad H_1: \mu > m
+    $$
+    (or $H_0: \mu \ge m$ vs $H_1: \mu < m$ when `reverse=True`) using the conjugate
+    normal mixture supermartingale (Robbins, 1970; Howard et al., 2021, Section 3.2).
+
+    For observations $x_1, \dots, x_t$, centered sum $S_t = \sum_{i = 1}^{t} (x_i - m)$,
+    and empirical variance accumulator $V_t = \sum_{i = 1}^{t} (x_i - \bar{x})^2$, the
+    one-sided wealth process is given by:
+    $$
+        M_t = \frac{1}{\sqrt{1 + \frac{V_t}{v_0}}} \exp\left(
+            \frac{(\max(0, S_t))^2}{2 (v_0 + V_t)}
+        \right)
+    $$
+    where $v_0 > 0$ is a prior cumulative variance parameter that stabilizes the
+    denominator against small-sample zero-variance collapse on rare-event data and tunes
+    the horizon.
+
+    References:
+        Robbins, H. (1970). Statistical Methods Related to the Law of the Iterated
+        Logarithm. The Annals of Mathematical Statistics, 41(5), 1397-1409.
+        http://www.jstor.org/stable/2239848
+
+        Howard, S. R., Ramdas, A., McAuliffe, J., & Sekhon, J. (2021). Time-uniform,
+        nonparametric, nonasymptotic confidence sequences. The Annals of Statistics,
+        49(2). https://doi.org/10.1214/20-aos1991
+
+    """
+
+    def __init__(
+        self,
+        m: float = 0.0,
+        v0: float = 1.0,
+        reverse: bool = False
+    ) -> None:
+        r"""
+        Args:
+            m: Mean $m$ in the null hypothesis.
+            v0: Prior cumulative variance parameter $v_0 > 0$.
+            reverse: If False (default), tests $H_0: \mu \le m$ vs $H_1: \mu > m$
+                (right-tailed). If True, tests $H_0: \mu \ge m$ vs $H_1: \mu < m$
+                (left-tailed).
+        """
+        super().__init__(m=m, reverse=reverse)
+        if v0 <= 0.0:
+            raise ValueError("Parameter `v0` must be positive.")
         self.v0 = float(v0)
-        self.n = 0
-        self.S = 0.0
-        self.SS = 0.0
+        self.running_sum_sq = 0.0
 
-    def update(self, x_batch: ArrayLike) -> None:
-        """Updates running statistics with a new batch of observations."""
-        x = np.asarray(x_batch, dtype=np.float64)
-        if x.size == 0:
-            return
-        self.n += len(x)
-        self.S += float(np.sum(x))
-        self.SS += float(np.sum(x ** 2))
+    def update(self, x: ArrayLike) -> None:
+        x = np.asarray(x, dtype=np.float64)
+        super().update(x)
+        self.running_sum_sq += float(np.sum(x**2))
 
-    def wealth(self, m: float | None = None) -> float:
-        """Evaluates current terminal wealth."""
-        if self.n == 0:
-            return 1.0
-
-        null_m = self.m if m is None else float(m)
-        s_n = self.S - self.n * null_m
-        if s_n <= 0.0:
+    def log_wealth(self) -> float:
+        if self.t < 2:
             return 0.0
 
-        v_n = max(0.0, self.SS - (self.S ** 2) / self.n)
-        denom = self.v0 + v_n
-        if denom <= 0.0:
-            return 1.0
+        # Signed deviation from null mean
+        s_t = self.running_sum - self.t * self.m
+        if self.reverse:
+            s_t = -s_t  # Testing H_0: \mu >= m -> evidence when sample mean < m
 
-        log_m = 0.5 * math.log(self.v0 / denom) + (s_n ** 2) / (2.0 * denom)
+        if s_t <= 0.0:
+            return float("-inf")
+
+        v_t = max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
+
+        denom = 2.0 * (self.v0 + v_t)
+        denom_log = 0.5 * math.log1p(v_t / self.v0)
+        return (s_t ** 2) / denom - denom_log
+
+    def wealth(self) -> float:
+        log_wealth = self.log_wealth()
+
         try:
-            return math.exp(min(log_m, 700.0))
+            return math.exp(log_wealth)
         except OverflowError:
             return float("inf")
 
-    def upper_confidence_bound(self, delta: float) -> float:
-        """Returns the Upper Confidence Bound (UCB) on the true mean at level delta."""
-        if self.n == 0:
-            return float("inf")
-        mu_hat = self.S / self.n
-        v_n = max(0.0, self.SS - (self.S ** 2) / self.n)
-        denom_log = 0.5 * math.log(1.0 + v_n / self.v0)
-        rad = (1.0 / self.n) * math.sqrt(
-            2.0 * (self.v0 + v_n) * (math.log(1.0 / delta) + denom_log)
-        )
-        return mu_hat + rad
 
-    def lower_confidence_bound(self, delta: float) -> float:
-        """Returns the Lower Confidence Bound (LCB) on the true mean at level delta."""
-        if self.n == 0:
-            return float("-inf")
-        mu_hat = self.S / self.n
-        v_n = max(0.0, self.SS - (self.S ** 2) / self.n)
-        denom_log = 0.5 * math.log(1.0 + v_n / self.v0)
-        rad = (1.0 / self.n) * math.sqrt(
-            2.0 * (self.v0 + v_n) * (math.log(1.0 / delta) + denom_log)
-        )
-        return mu_hat - rad
+class BettingSupermartingale(TestSupermartingale):
+    r"""Stateful predictable empirical-Bernstein betting supermartingale for
+    $[0, 1]$-bounded observations (Waudby-Smith & Ramdas, 2024; based closely on
+    `confseq.betting`).
 
-
-class BettingSupermartingale:
-    r"""Stateful predictable empirical-Bernstein betting supermartingale for $[0, 1]$-bounded
-    observations (Waudby-Smith & Ramdas, 2024; based closely on `confseq.betting`).
-
-    Maintains online state ($t$, $S_t$, $D_t$, $K_t$) and advances wealth sample-by-sample
-    or batch-by-batch in $O(B)$ time.
+    References:
+        Ian Waudby-Smith, Aaditya Ramdas, "Estimating means of bounded random variables
+        by betting", Journal of the Royal Statistical Society Series B: Statistical
+        Methodology, Volume 86, Issue 1, February 2024, Pages 1-27.
     """
 
     def __init__(
@@ -110,21 +175,25 @@ class BettingSupermartingale:
         prior_variance: float = 0.25,
         reverse: bool = False,
     ):
-        """
+        r"""
         Args:
-            m: Candidate mean / null value in [0, 1].
-            alpha: Significance level delta in (0, 1).
+            m: Mean $m$ in the null hypothesis.
+            alpha: Significance level in (0, 1).
             population_size: Finite population size $N$ if sampling without replacement.
-            horizon: Fixed sample size horizon. If None, uses anytime-valid 1/sqrt(t log t) scaling.
+            horizon: Fixed sample size horizon. If None, uses anytime-valid
+                $1/\sqrt{t log t}$ scaling.
             trunc_scale: Scale factor for lambda truncation (default: 0.5).
             m_trunc: Whether truncation depends on m (default: True).
-            fake_obs: Number of fake observations for regularizing running mean and variance (default: 1).
+            fake_obs: Number of fake observations for regularizing running mean and
+                variance (default: 1).
             prior_mean: Prior mean for regularizing sample mean (default: 0.5).
-            prior_variance: Prior variance for regularizing sample variance (default: 0.25).
-            reverse: If True, tests $H_0: \mu \ge m$ by running the betting process on $1 - X$
-                against null $1 - m$.
+            prior_variance: Prior variance for regularizing sample variance
+                (default: 0.25).
+            reverse: If False (default), tests $H_0: \mu \le m$ vs $H_1: \mu > m$
+                (right-tailed). If True, tests $H_0: \mu \ge m$ vs $H_1: \mu < m$
+                (left-tailed).
         """
-        self.m = float(m)
+        super().__init__(m=m, reverse=reverse)
         self.alpha = float(alpha)
         self.population_size = population_size
         self.horizon = horizon
@@ -133,21 +202,21 @@ class BettingSupermartingale:
         self.fake_obs = int(fake_obs)
         self.prior_mean = float(prior_mean)
         self.prior_variance = float(prior_variance)
-        self.reverse = bool(reverse)
 
         # Internal state
-        self.t = 0
         self.S_t = 0.0
         self.cum_sq_dev = 0.0
         self.last_sigma2 = float(prior_variance)
         self.current_wealth = 1.0
 
-    def update(self, x_batch: ArrayLike) -> None:
-        """Advances the betting supermartingale by a new batch of observations."""
-        x = np.asarray(x_batch, dtype=np.float64)
+    def update(self, x: ArrayLike) -> None:
+        x = np.asarray(x, dtype=np.float64)
         B = x.size
         if B == 0 or self.current_wealth == 0.0:
+            super().update(x)
             return
+        t0: int = self.t
+        super().update(x) # Base class updates self.t and self.running_sum
 
         if self.reverse:
             x = 1.0 - x
@@ -155,7 +224,6 @@ class BettingSupermartingale:
         else:
             null_m = self.m
 
-        t0 = self.t
         t = t0 + np.arange(1, B + 1, dtype=np.float64)
         S_t = self.S_t + np.cumsum(x)
 
@@ -211,33 +279,13 @@ class BettingSupermartingale:
         self.cum_sq_dev = float(cum_sq_dev_t[-1])
         self.last_sigma2 = float(sigma2_t[-1])
 
+    def log_wealth(self) -> float:
+        if self.current_wealth <= 0.0:
+            return float("-inf")
+        return math.log(self.current_wealth)
+
     def wealth(self) -> float:
-        """Returns the current terminal wealth."""
         return self.current_wealth
-
-
-def eval_betting_wealth(
-    x: NDArray[np.float64],
-    m: float,
-    alpha: float,
-    population_size: int | None = None,
-    horizon: int | None = None,
-    trunc_scale: float = 0.5,
-    m_trunc: bool = True,
-) -> float:
-    """Evaluates the terminal wealth of the one-sided (positive) betting supermartingale
-    against a candidate mean.
-    """
-    mart = BettingSupermartingale(
-        m=m,
-        alpha=alpha,
-        population_size=population_size,
-        horizon=horizon,
-        trunc_scale=trunc_scale,
-        m_trunc=m_trunc,
-    )
-    mart.update(x)
-    return mart.wealth()
 
 
 def compute_prior_var(
@@ -267,58 +315,45 @@ def compute_prior_var(
     return float(np.clip(v0, 0.5, 10.0))
 
 
-def eval_asymptotic_wealth(
-    x: ArrayLike,
-    m: float = 0.0,
-    prior_var: float = 1.0,
-) -> float:
-    r"""Evaluates the terminal wealth of the asymptotic Gaussian mixture supermartingale
-    wealth against a candidate mean.
-    """
-    mart = AsymptoticSupermartingale(m=m, v0=prior_var)
-    mart.update(x)
-    return mart.wealth()
+# def eval_asymptotic_betting_wealth(
+#     x: ArrayLike,
+#     m: float,
+#     alpha: float = 0.05,
+#     c: float = 0.5,
+#     prior_mean: float = 0.0,
+#     prior_var: float = 1.0,
+#     fake_obs: int = 1,
+# ) -> float:
+#     r"""Evaluates the terminal wealth of the asymptotic betting supermartingale
+#     of Waudby-Smith, Arbour, Sinha & Ramdas (2024)
+#     """
+#     x = np.asarray(x, dtype=np.float64)
+#     N = len(x)
+#     if N == 0:
+#         return 1.0
 
+#     diff = x - m
+#     t = np.arange(1, N + 1)
 
-def eval_asymptotic_betting_wealth(
-    x: ArrayLike,
-    m: float,
-    alpha: float = 0.05,
-    c: float = 0.5,
-    prior_mean: float = 0.0,
-    prior_var: float = 1.0,
-    fake_obs: int = 1,
-) -> float:
-    r"""Evaluates the terminal wealth of the asymptotic betting supermartingale
-    of Waudby-Smith, Arbour, Sinha & Ramdas (2024)
-    """
-    x = np.asarray(x, dtype=np.float64)
-    N = len(x)
-    if N == 0:
-        return 1.0
+#     mu_hat_t = (fake_obs * prior_mean + np.cumsum(diff)) / (t + fake_obs)
+#     mu_prev = np.append(prior_mean, mu_hat_t[:-1])
 
-    diff = x - m
-    t = np.arange(1, N + 1)
+#     sigma2_t = (fake_obs * prior_var + np.cumsum((diff - mu_hat_t) ** 2)) / (t + fake_obs)
+#     sigma2_prev = np.append(prior_var, sigma2_t[:-1])
 
-    mu_hat_t = (fake_obs * prior_mean + np.cumsum(diff)) / (t + fake_obs)
-    mu_prev = np.append(prior_mean, mu_hat_t[:-1])
+#     cum_max = np.maximum.accumulate(np.abs(diff))
+#     max_prev = np.append(1.0, cum_max[:-1])
 
-    sigma2_t = (fake_obs * prior_var + np.cumsum((diff - mu_hat_t) ** 2)) / (t + fake_obs)
-    sigma2_prev = np.append(prior_var, sigma2_t[:-1])
+#     with np.errstate(divide="ignore", invalid="ignore"):
+#         raw_lambda = np.sqrt(
+#             2.0 * np.log(1.0 / alpha) / (t * np.log(1.0 + t) * sigma2_prev)
+#         )
+#         raw_lambda = np.where(mu_prev > 0.0, raw_lambda, 0.0)
+#         lambdas = np.minimum(raw_lambda, c / max_prev)
+#         lambdas = np.nan_to_num(lambdas, nan=0.0, posinf=0.0, neginf=0.0)
 
-    cum_max = np.maximum.accumulate(np.abs(diff))
-    max_prev = np.append(1.0, cum_max[:-1])
+#         multiplicands = np.maximum(1.0 + lambdas * diff, 0.0)
+#         wealth_process = np.cumprod(multiplicands)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        raw_lambda = np.sqrt(
-            2.0 * np.log(1.0 / alpha) / (t * np.log(1.0 + t) * sigma2_prev)
-        )
-        raw_lambda = np.where(mu_prev > 0.0, raw_lambda, 0.0)
-        lambdas = np.minimum(raw_lambda, c / max_prev)
-        lambdas = np.nan_to_num(lambdas, nan=0.0, posinf=0.0, neginf=0.0)
-
-        multiplicands = np.maximum(1.0 + lambdas * diff, 0.0)
-        wealth_process = np.cumprod(multiplicands)
-
-    return float(wealth_process[-1])
+#     return float(wealth_process[-1])
 

@@ -4,6 +4,21 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
+def validate_thresholds(
+    thresholds: ArrayLike,
+    name: str = "thresholds",
+) -> NDArray[np.float64]:
+    """Validates that thresholds are a non-empty 1D array sorted in strictly ascending
+    order."""
+    arr = np.asarray(thresholds, dtype=np.float64)
+    if arr.ndim != 1 or len(arr) == 0:
+        raise ValueError(f"`{name}` must be a non-empty 1D array.")
+    if np.any(np.diff(arr) <= 0):
+        raise ValueError(
+            f"`{name}` must be sorted in strictly ascending order without duplicates."
+        )
+    return arr
+
 def quantile_power_law_grid(
     scores: ArrayLike,
     num_thresholds: int = 500,

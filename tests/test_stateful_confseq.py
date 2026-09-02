@@ -3,12 +3,7 @@ import pytest
 from confseq.betting import diversified_betting_mart
 from confseq.betting_strategies import lambda_predmix_eb
 
-from actis.confseq import (
-    AsymptoticSupermartingale,
-    BettingSupermartingale,
-    eval_asymptotic_wealth,
-    eval_betting_wealth,
-)
+from actis.confseq import BettingSupermartingale, GaussianMixtureSupermartingale
 from actis.tuner import ACTIS
 
 
@@ -30,7 +25,7 @@ def _eval_confseq_reference(x, m, alpha, population_size=None, horizon=None, tru
     return float(wealth_process[-1])
 
 
-class TestAsymptoticSupermartingale:
+class TestGaussianMixtureSupermartingale:
 
     @pytest.mark.parametrize("m", [0.0, 0.2, -0.1])
     @pytest.mark.parametrize("v0", [0.01, 0.1, 1.0, 5.0])
@@ -39,14 +34,12 @@ class TestAsymptoticSupermartingale:
         x = rng.normal(loc=m + 0.05, scale=0.5, size=500)
 
         # Full single-shot evaluation
-        mart_full = AsymptoticSupermartingale(m=m, v0=v0)
+        mart_full = GaussianMixtureSupermartingale(m=m, v0=v0)
         mart_full.update(x)
         w_full = mart_full.wealth()
-        ucb_full = mart_full.upper_confidence_bound(0.05)
-        lcb_full = mart_full.lower_confidence_bound(0.05)
 
         # Multi-batch incremental evaluation
-        mart_step = AsymptoticSupermartingale(m=m, v0=v0)
+        mart_step = GaussianMixtureSupermartingale(m=m, v0=v0)
         chunk_sizes = [50, 100, 150, 200]
         idx = 0
         for sz in chunk_sizes:
@@ -54,15 +47,11 @@ class TestAsymptoticSupermartingale:
             idx += sz
 
         assert np.isclose(w_full, mart_step.wealth(), rtol=1e-12, atol=1e-12)
-        assert np.isclose(ucb_full, mart_step.upper_confidence_bound(0.05), rtol=1e-12, atol=1e-12)
-        assert np.isclose(lcb_full, mart_step.lower_confidence_bound(0.05), rtol=1e-12, atol=1e-12)
 
     def test_empty_update(self):
-        mart = AsymptoticSupermartingale(m=0.0, v0=1.0)
+        mart = GaussianMixtureSupermartingale(m=0.0, v0=1.0)
         mart.update([])
         assert mart.wealth() == 1.0
-        assert mart.upper_confidence_bound(0.05) == float("inf")
-        assert mart.lower_confidence_bound(0.05) == float("-inf")
 
 
 class TestBettingSupermartingale:
