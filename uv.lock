@@ -45,10 +45,10 @@ experiments = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bargain", marker = "extra == 'experiments'", git = "https://github.com/ucbepic/BARGAIN.git?rev=3502b1a4ffa33ae5e5e99edecada8a127f222a58" },
+    { name = "bargain", marker = "extra == 'experiments'", git = "ssh://git@github.com/ngmarchant/BARGAIN.git?rev=perf" },
     { name = "confseq" },
     { name = "datasets", marker = "extra == 'experiments'", specifier = ">=2.0.0" },
-    { name = "lotus-ai", marker = "extra == 'experiments'", specifier = "==1.2.4" },
+    { name = "lotus-ai", marker = "extra == 'experiments'", git = "ssh://git@github.com/ngmarchant/lotus.git?rev=perf" },
     { name = "numpy", specifier = ">=1.25.0,<2.0.0" },
     { name = "plotnine", marker = "extra == 'experiments'" },
     { name = "pybind11", specifier = ">=2.12.0" },
@@ -270,7 +270,7 @@ wheels = [
 [[package]]
 name = "bargain"
 version = "0.1.1"
-source = { git = "https://github.com/ucbepic/BARGAIN.git?rev=3502b1a4ffa33ae5e5e99edecada8a127f222a58#3502b1a4ffa33ae5e5e99edecada8a127f222a58" }
+source = { git = "ssh://git@github.com/ngmarchant/BARGAIN.git?rev=perf#ca67880b0f2a13110a67c39762a7af776b897689" }
 dependencies = [
     { name = "numpy" },
     { name = "openai" },
@@ -1616,7 +1616,7 @@ wheels = [
 [[package]]
 name = "lotus-ai"
 version = "1.2.4"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "ssh://git@github.com/ngmarchant/lotus.git?rev=perf#095ef0dcf34194604dee9826699e17e0416e5e95" }
 dependencies = [
     { name = "backoff" },
     { name = "faiss-cpu" },
@@ -1627,10 +1627,6 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "tiktoken" },
     { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/18/6f/c27a0d19917e22f0c59d29760ee0ec51c03fa8c114de981540dae54b95fb/lotus_ai-1.2.4.tar.gz", hash = "sha256:03f116ad4af2fea2066117ced65938a96c4cc81ed616315cf18e862b29a6547d", size = 1430174, upload-time = "2026-07-03T22:30:15.808Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/e0/837860bc0b6bae63a7acc93e7f9c9afdccd6acf27e73d7a629062d5109a0/lotus_ai-1.2.4-py3-none-any.whl", hash = "sha256:4803bcba7a30d50095b0c6fc5036942ebd1cfceb42a3f907454892c11171fa89", size = 182676, upload-time = "2026-07-03T22:30:14.68Z" },
 ]
 
 [[package]]

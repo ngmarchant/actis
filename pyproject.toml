@@ -35,8 +35,8 @@ dev = [
 experiments = [
     "plotnine",
     "datasets>=2.0.0",
-    "bargain @ git+https://github.com/ucbepic/BARGAIN.git@3502b1a4ffa33ae5e5e99edecada8a127f222a58",
-    "lotus-ai==1.2.4",
+    "bargain @ git+ssh://git@github.com/ngmarchant/BARGAIN.git@perf",
+    "lotus-ai @ git+ssh://git@github.com/ngmarchant/lotus.git@perf",
 ]
 
 [tool.uv]
