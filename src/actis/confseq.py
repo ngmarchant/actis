@@ -204,6 +204,9 @@ class BettingSupermartingale(TestSupermartingale):
         self.prior_variance = float(prior_variance)
 
         # Internal state
+        # Note: self.S_t tracks the cumulative sum of the transformed betting
+        # observations (i.e. (1 - x) when reverse=True), distinct from
+        # self.running_sum in the base class which tracks raw x.
         self.S_t = 0.0
         self.cum_sq_dev = 0.0
         self.last_sigma2 = float(prior_variance)
@@ -244,7 +247,7 @@ class BettingSupermartingale(TestSupermartingale):
             raw_lambda = np.sqrt(2.0 * np.log(1.0 / self.alpha) / (t * np.log(1.0 + t) * sigma2_prev))
         else:
             raw_lambda = np.sqrt(2.0 * np.log(1.0 / self.alpha) / (self.horizon * sigma2_prev))
-        raw_lambda = np.nan_to_num(raw_lambda, nan=0.0, posinf=0.0, neginf=0.0)
+        raw_lambda[~np.isfinite(raw_lambda)] = 0.0
 
         # Conditional null mean (accounting for hypergeometric without-replacement draws if N is set)
         if self.population_size is not None:
@@ -258,16 +261,20 @@ class BettingSupermartingale(TestSupermartingale):
 
         # Boundary truncation (matching confseq)
         if self.m_trunc:
-            with np.errstate(divide="ignore"):
-                upper = np.where(mu_t > 0.0, self.trunc_scale / mu_t, np.inf)
-                lower = np.where(mu_t < 1.0, -self.trunc_scale / (1.0 - mu_t), -np.inf)
+            upper = np.full(B, np.inf, dtype=np.float64)
+            mask_u = mu_t > 0.0
+            upper[mask_u] = self.trunc_scale / mu_t[mask_u]
+            lower = np.full(B, -np.inf, dtype=np.float64)
+            mask_l = mu_t < 1.0
+            lower[mask_l] = -self.trunc_scale / (1.0 - mu_t[mask_l])
+
             lam = np.clip(raw_lambda, lower, upper)
         else:
             lam = np.clip(raw_lambda, -self.trunc_scale, self.trunc_scale)
 
         mult = 1.0 + lam * (x - mu_t)
         mult = np.maximum(mult, 0.0)
-        mult = np.nan_to_num(mult, nan=0.0)
+        mult[np.isnan(mult)] = 0.0
         if self.population_size is not None:
             mult = np.where((mu_t < 0.0) | (mu_t > 1.0), np.inf, mult)
 
