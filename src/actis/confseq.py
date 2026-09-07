@@ -102,27 +102,34 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
     def __init__(
         self,
         m: float = 0.0,
-        v0: float = 1.0,
+        v_0: float = 1.0,
         reverse: bool = False
     ) -> None:
         r"""
         Args:
             m: Mean $m$ in the null hypothesis.
-            v0: Prior cumulative variance parameter $v_0 > 0$.
+            v_0: Prior cumulative variance parameter $v_0 > 0$.
             reverse: If False (default), tests $H_0: \mu \le m$ vs $H_1: \mu > m$
                 (right-tailed). If True, tests $H_0: \mu \ge m$ vs $H_1: \mu < m$
                 (left-tailed).
         """
         super().__init__(m=m, reverse=reverse)
-        if v0 <= 0.0:
-            raise ValueError("Parameter `v0` must be positive.")
-        self.v0 = float(v0)
+        if v_0 <= 0.0:
+            raise ValueError("Parameter `v_0` must be positive.")
+        self.v_0 = float(v_0)
         self.running_sum_sq = 0.0
 
     def update(self, x: ArrayLike) -> None:
         x = np.asarray(x, dtype=np.float64)
         super().update(x)
         self.running_sum_sq += float(np.sum(x**2))
+
+    @property
+    def v_t(self) -> float:
+        r"""Empirical variance accumulator $V_t = \sum_{i=1}^t (x_i - \bar{x}_t)^2$."""
+        if self.t < 2:
+            return 0.0
+        return max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
 
     def log_wealth(self) -> float:
         if self.t < 2:
@@ -136,10 +143,10 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
         if s_t <= 0.0:
             return float("-inf")
 
-        v_t = max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
+        v_t = self.v_t
 
-        denom = 2.0 * (self.v0 + v_t)
-        denom_log = 0.5 * math.log1p(v_t / self.v0)
+        denom = 2.0 * (self.v_0 + v_t)
+        denom_log = 0.5 * math.log1p(v_t / self.v_0)
         return (s_t ** 2) / denom - denom_log
 
     def wealth(self) -> float:
@@ -293,33 +300,6 @@ class BettingSupermartingale(TestSupermartingale):
 
     def wealth(self) -> float:
         return self.current_wealth
-
-
-def compute_prior_var(
-    scores: ArrayLike,
-    gamma_R: float,
-    q: ArrayLike | None = None,
-    weights: ArrayLike | None = None,
-    n_init: int = 1000,
-) -> float:
-    r"""Computes the prior variance scale v0 for the Gaussian mixture confidence
-    sequence.
-    """
-    scores = np.asarray(scores, dtype=np.float64)
-    N = len(scores)
-    if N == 0:
-        return 0.01
-
-    mean_s = float(np.mean(scores))
-
-    if q is not None or weights is not None:
-        v0 = max(0.01, float(n_init) * mean_s * (1.0 - gamma_R))
-        return float(np.clip(v0, 0.01, 1.0))
-
-    margin_scale = (1.0 - gamma_R) ** 2
-    sigma_sq = margin_scale * max(mean_s * (1.0 - mean_s), 0.01)
-    v0 = float(n_init) * sigma_sq
-    return float(np.clip(v0, 0.5, 10.0))
 
 
 # def eval_asymptotic_betting_wealth(

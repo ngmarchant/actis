@@ -225,7 +225,7 @@ def main():
             proposal_method=args.proposal_method,
             power_law_quantiles=args.power_law_quantiles,
             conf_seq="asymptotic",
-            v0=args.v0,
+            v_0=args.v0,
             adaptive=True,
             initial_sample_size=args.sample_size,
             batch_size=args.batch_size,

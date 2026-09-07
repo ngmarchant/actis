@@ -10,6 +10,7 @@ Defines abstract base runners and concrete implementations for:
 Provides a unified evaluation suite (`run_evaluation_suite`) for paired Monte Carlo
 benchmarking.
 """
+import math
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
@@ -26,15 +27,18 @@ from lotus.types import CascadeArgs
 from numpy.typing import NDArray
 
 from actis import ACTIS, ProposalMethod, compute_pr_proposal
-from actis.confseq import compute_prior_var
 from actis.sampler import PopulationSampler
 from actis.threshold_grid import quantile_power_law_grid
+from actis.tuner import compute_prior_var
 from experiments.scenarios import BaseScenario
+
+FloatArray = NDArray[np.float64]
+BoolArray = NDArray[np.bool_]
 
 
 def compute_precision_recall(
-    pred_mask: NDArray[np.bool_],
-    labels: NDArray[np.bool_]
+    pred_mask: BoolArray,
+    labels: BoolArray
 ) -> tuple[float, float]:
     total_positives = np.sum(labels)
     tp = np.sum(pred_mask & labels)
@@ -55,6 +59,7 @@ class TrialResult:
     deployment_calls: int = 0
     tau_pos: float | None = None
     tau_neg: float | None = None
+    is_asymptotically_valid: bool | None = None
 
 
 @dataclass(kw_only=True)
@@ -65,8 +70,8 @@ class BaseFilterRunner(ABC):
     @abstractmethod
     def run_trial(
         self,
-        scores: NDArray[np.float64],
-        labels: NDArray[np.bool_],
+        scores: FloatArray,
+        labels: BoolArray,
         gamma_R: float,
         gamma_P: float,
         delta: float,
@@ -90,11 +95,12 @@ class BaseFilterRunner(ABC):
 
 
 def evaluate_cascade_trial(
-    scores: NDArray[np.float64],
-    labels: NDArray[np.bool_],
+    scores: FloatArray,
+    labels: BoolArray,
     tau_pos: float,
     tau_neg: float,
     calib_indices: set[int] | list[int] | NDArray[np.int64],
+    is_asymptotically_valid: bool | None = None,
 ) -> TrialResult:
     pop_size = len(scores)
     pred_mask = (scores >= tau_pos) | ((scores >= tau_neg) & labels)
@@ -119,6 +125,7 @@ def evaluate_cascade_trial(
         deployment_calls=dep_calls,
         tau_pos=tau_pos,
         tau_neg=tau_neg,
+        is_asymptotically_valid=is_asymptotically_valid,
     )
 
 
@@ -152,16 +159,17 @@ class ACTISRunner(BaseFilterRunner):
     conf_seq: Literal["finite", "asymptotic"] = "finite"
     """Confidence sequence type to use."""
 
-    v0: float | Literal["auto"] | None = "auto"
+    v_0: float | tuple[FloatArray, FloatArray] | Literal["auto"] = "auto"
     """Prior variance for asymptotic Gaussian mixture supermartingale if `conf_seq` is
-    "asymptotic". If "auto", the prior variance is estimated from the initial sample."""
+    "asymptotic"."""
 
     adaptive: bool = False
     """Whether to use adaptive sampling expansion."""
 
-    initial_sample_size: int = 1000
+    initial_sample_size: int | Literal["auto"] = "auto"
     """Initial sample size. If `adaptive` is True, this is the size of the initial
-    batch. If `adaptive` is False, this is the fixed sample size."""
+    batch. If `adaptive` is False, this is the fixed sample size. If "auto", dynamically
+    scales to the dataset size."""
 
     batch_size: int = 100
     """Batch size for adaptive sampling expansion. Ignored if `adaptive` is False."""
@@ -171,9 +179,14 @@ class ACTISRunner(BaseFilterRunner):
     interpreted as a fraction of the dataset size. If an integer >= 1, it is interpreted
     as an absolute sample size. Ignored if None or `adaptive` is False."""
 
-    min_positives: int = 30
+    min_positives: int | Literal["auto"] = "auto"
     """Minimum number of positive labels to observe before stopping adaptive sampling.
-    Ignored if `adaptive` is False."""
+    If "auto", dynamically calibrated based on delta, pop_size, and proxy scores."""
+
+    p_floor: float | Literal["auto"] = "auto"
+    """Lower-bound positive prevalence for population scaling of `min_positives`.
+    If "auto" (default), dynamically estimated from population proxy scores. If float,
+    specifies the prevalence floor directly (e.g. 0.01 or 0.001)."""
 
     def __post_init__(self):
         if self.name == "":
@@ -181,14 +194,24 @@ class ACTISRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: NDArray[np.float64],
-        labels: NDArray[np.bool_],
+        scores: FloatArray,
+        labels: BoolArray,
         gamma_R: float,
         gamma_P: float,
         delta: float,
         rng: np.random.Generator,
     ) -> TrialResult:
         pop_size = len(scores)
+
+        # Resolve auto initial_sample_size
+        if self.initial_sample_size == "auto":
+            init_sample_size = min(
+                pop_size,
+                max(1, min(1000, max(50, int(np.ceil(0.10 * pop_size)))))
+            )
+        else:
+            init_sample_size = min(pop_size, int(self.initial_sample_size))
+
         max_sample_size: int | None = None
         if isinstance(self.max_sample_size, float) and \
             (0.0 < self.max_sample_size <= 1.0):
@@ -275,16 +298,27 @@ class ACTISRunner(BaseFilterRunner):
             rng=rng,
         )
 
-        if self.v0 is None or self.v0 == "auto":
-            v0_val = compute_prior_var(
+        if self.v_0 is None or self.v_0 == "auto":
+            v_0_val = compute_prior_var(
                 scores=scores,
                 gamma_R=gamma_R,
-                q=q,
+                gamma_P=gamma_P,
+                delta=delta,
+                thresholds=thresholds,
+                thresholds_upper=thresholds_upper,
                 weights=weights,
-                n_init=self.initial_sample_size,
+            )
+        elif self.v_0 in ("global", "global_calibrated"):
+            v_0_val = compute_prior_var(
+                scores=scores,
+                gamma_R=gamma_R,
+                gamma_P=gamma_P,
+                delta=delta,
+                thresholds=None,
+                weights=weights,
             )
         else:
-            v0_val = float(self.v0)
+            v_0_val = self.v_0
 
         tuner = ACTIS(
             gamma_R=gamma_R,
@@ -293,9 +327,11 @@ class ACTISRunner(BaseFilterRunner):
             thresholds=thresholds,
             thresholds_upper=thresholds_upper,
             pop_size=pop_size_param,
-            horizon=None if self.adaptive else self.initial_sample_size,
+            horizon=None if self.adaptive else init_sample_size,
             conf_seq=self.conf_seq,
-            v0=v0_val,
+            v_0=v_0_val,
+            min_positives=self.min_positives,
+            p_floor=self.p_floor,
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,
@@ -307,10 +343,12 @@ class ACTISRunner(BaseFilterRunner):
                 remaining = min(remaining, max_sample_size - sampler.sample_count)
             if self.sampling_method == "wor":
                 remaining = min(remaining, pop_size - sampler.sample_count)
+            if math.isinf(remaining):
+                return max(0, requested)
             return max(0, min(requested, int(remaining)))
 
         # Draw initial batch
-        init_batch_size = get_batch_size(self.initial_sample_size)
+        init_batch_size = get_batch_size(init_sample_size)
         batch_idx = sampler.sample(init_batch_size)
 
         calib_res = tuner.add_samples(
@@ -329,12 +367,10 @@ class ACTISRunner(BaseFilterRunner):
                 if next_batch_size <= 0:
                     break
 
-                # TODO: ensure this method works when sampling with replacement
                 should_continue, _ = tuner.should_continue_sampling(
                     population_scores=scores,
                     batch_size=next_batch_size,
                     max_sample_size=max_sample_size,
-                    min_positives=self.min_positives,
                 )
                 if not should_continue:
                     break
@@ -354,6 +390,7 @@ class ACTISRunner(BaseFilterRunner):
             tau_pos=calib_res.tau_pos,
             tau_neg=calib_res.tau_neg,
             calib_indices=tuner.seen_indices,
+            is_asymptotically_valid=calib_res.is_asymptotically_valid,
         )
 
 
@@ -369,8 +406,8 @@ class LotusRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: NDArray[np.float64],
-        labels: NDArray[np.bool_],
+        scores: FloatArray,
+        labels: BoolArray,
         gamma_R: float,
         gamma_P: float,
         delta: float,
@@ -421,7 +458,7 @@ class LotusRunner(BaseFilterRunner):
 class VectorizedProxy(Proxy):
     """Fast vectorized proxy wrapper for population arrays."""
 
-    def __init__(self, scores: NDArray[np.float64]):
+    def __init__(self, scores: FloatArray):
         super().__init__(verbose=False, max_workers=1)
         self.scores = np.asarray(scores, dtype=np.float64)
 
@@ -444,7 +481,7 @@ class VectorizedProxy(Proxy):
 class VectorizedOracle(Oracle):
     """Fast vectorized oracle wrapper that tracks all unique queried items."""
 
-    def __init__(self, labels: NDArray[np.bool_]):
+    def __init__(self, labels: BoolArray):
         super().__init__(verbose=False, max_workers=1)
         self.labels = np.asarray(labels, dtype=bool)
         self.queried_indices: set[int] = set()
@@ -494,8 +531,8 @@ class BargainPRRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: NDArray[np.float64],
-        labels: NDArray[np.bool_],
+        scores: FloatArray,
+        labels: BoolArray,
         gamma_R: float,
         gamma_P: float,
         delta: float,
@@ -603,6 +640,14 @@ def summarize_runner_trials(
         summary["mean_tau_pos"] = float(np.mean(tau_poses))
     if tau_negs:
         summary["mean_tau_neg"] = float(np.mean(tau_negs))
+
+    valid_flags = [
+        r.is_asymptotically_valid for r in results
+        if r.is_asymptotically_valid is not None
+    ]
+    if valid_flags:
+        summary["asymptotic_validity_rate"] = float(np.mean(valid_flags))
+
     return summary
 
 
