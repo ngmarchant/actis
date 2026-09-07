@@ -11,8 +11,12 @@ Provides a unified evaluation suite (`run_evaluation_suite`) for paired Monte Ca
 benchmarking.
 """
 import math
+import random
+import sys
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 import lotus
@@ -31,6 +35,21 @@ from actis.sampler import PopulationSampler
 from actis.threshold_grid import quantile_power_law_grid
 from actis.tuner import compute_prior_var
 from experiments.scenarios import BaseScenario
+
+_SCALEDOC_DIR = (
+    Path(__file__).resolve().parent.parent / "externals" / "ScaleDoc" / "src"
+)
+_HAS_SCALEDOC = False
+if _SCALEDOC_DIR.exists():
+    if str(_SCALEDOC_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCALEDOC_DIR))
+    try:
+        from cascade import calibrate_sampling, select_sim_filterB, smooth_distr
+
+        _HAS_SCALEDOC = True
+    except ImportError:
+        _HAS_SCALEDOC = False
+
 
 FloatArray = NDArray[np.float64]
 BoolArray = NDArray[np.bool_]
@@ -398,7 +417,7 @@ class ACTISRunner(BaseFilterRunner):
 class LotusRunner(BaseFilterRunner):
     """Runner for legacy LOTUS using learn_cascade_thresholds."""
 
-    sample_size: int = 1000
+    sampling_percentage: float = 0.1
 
     def __post_init__(self):
         if self.name == "":
@@ -414,16 +433,11 @@ class LotusRunner(BaseFilterRunner):
         rng: np.random.Generator,
     ) -> TrialResult:
 
-        pop_size = len(scores)
-        sampling_percentage = 0.1
-        if pop_size > 0:
-            sampling_percentage = min(1.0, self.sample_size / pop_size)
-
         cascade_args = CascadeArgs(
             recall_target=gamma_R,
             precision_target=gamma_P,
             failure_probability=delta,
-            sampling_percentage=sampling_percentage,
+            sampling_percentage=self.sampling_percentage,
             cascade_IS_random_seed=int(rng.integers(0, 2**31 - 1))
         )
 
@@ -578,6 +592,155 @@ class BargainPRRunner(BaseFilterRunner):
             total_oracle_calls=total_calls,
             total_oracle_rate=total_calls / pop_size,
         )
+
+
+if _HAS_SCALEDOC:
+
+    @dataclass(kw_only=True)
+    class ScaleDocRunner(BaseFilterRunner):
+        """
+        Runner for ScaleDoc (https://github.com/Seurgul/ScaleDoc).
+
+        Calibrates model cascade thresholds on proxy confidence scores using
+        ScaleDoc's calibration workflow (stratified sampling, jittering, moving average
+        smoothing, and Pareto-frontier threshold search).
+        """
+
+        sample_rate: float = 0.05
+        """Calibration sampling ratio (default 0.05, matching ScaleDoc's
+        config.json)."""
+
+        sample_size: int | None = None
+        """Optional fixed calibration sample size. If specified and > 0, sample_rate
+        is computed as min(1.0, sample_size / pop_size)."""
+
+        num_bins: int = 64
+        """Number of bins for score histogram (default 64, matching ScaleDoc)."""
+
+        window_size: int = 5
+        """Window size for moving average smoothing of score distributions
+        (default 5)."""
+
+        def __post_init__(self):
+            if self.name == "":
+                self.name = "scaledoc"
+
+        def run_trial(
+            self,
+            scores: FloatArray,
+            labels: BoolArray,
+            gamma_R: float,
+            gamma_P: float,
+            delta: float,
+            rng: np.random.Generator,
+        ) -> TrialResult:
+            pop_size = len(scores)
+
+            # ScaleDoc only supports a target F1 score gamma_F, not separate precision
+            # and recall targets. In order to compare, setting:
+            # gamma_F = max(2*gamma_P / (1 + gamma_P), 2*gamma_R / (1 + gamma_R))
+            # guarantees that precision >= gamma_P and recall >= gamma_R.
+            f1_p = (2.0 * gamma_P) / (1.0 + gamma_P)
+            f1_r = (2.0 * gamma_R) / (1.0 + gamma_R)
+            gamma_F = max(f1_p, f1_r)
+
+            sample_rate = self.sample_rate
+            if self.sample_size is not None and pop_size > 0:
+                sample_rate = min(1.0, self.sample_size / pop_size)
+
+            # Seed global random and np.random for reproducibility across trials,
+            # as ScaleDoc's cascade functions internally invoke legacy np.random.
+            trial_seed = int(rng.integers(0, 2**31 - 1))
+            random.seed(trial_seed)
+            np.random.seed(trial_seed)
+
+            calib_samples: list[int] | NDArray[np.int64] = []
+            try:
+                hist, bins = np.histogram(scores, bins=self.num_bins)
+                pos_idx = np.where(labels)[0]
+                neg_idx = np.where(~labels)[0]
+
+                samples = calibrate_sampling(
+                    sample_rate, hist, bins, scores, pos_idx, neg_idx
+                )
+                calib_samples = samples
+
+                bins_center = np.array(
+                    [(bins[i] + bins[i + 1]) / 2 for i in range(len(bins) - 1)]
+                )
+                pos_ = np.array([j for j in samples if j in pos_idx])
+                neg_ = np.array([j for j in samples if j in neg_idx])
+
+                pos_cos_sample = (
+                    scores[pos_] if pos_.shape[0] > 0 else np.array([])
+                )
+                neg_cos_sample = (
+                    scores[neg_] if neg_.shape[0] > 0 else np.array([])
+                )
+                hist_pos_sample, _ = np.histogram(pos_cos_sample, bins=bins)
+                hist_neg_sample, _ = np.histogram(neg_cos_sample, bins=bins)
+
+                # 1. Jittering
+                rand1 = np.random.choice(
+                    [0, 0.1, 0.2], size=hist_pos_sample.shape, p=[0.6, 0.3, 0.1]
+                )
+                rand2 = np.random.choice(
+                    [0, 0.1, 0.2], size=hist_neg_sample.shape, p=[0.6, 0.3, 0.1]
+                )
+                hist_pos_sample = hist_pos_sample + rand1
+                hist_neg_sample = hist_neg_sample + rand2
+
+                # 2. Smoothing
+                _, neg_hist_sample_ma = smooth_distr(
+                    bins, hist_neg_sample, window_size=self.window_size
+                )
+                _, pos_hist_sample_ma = smooth_distr(
+                    bins, hist_pos_sample, window_size=self.window_size
+                )
+
+                steps = bins[::2]
+
+                le, re, _ = select_sim_filterB(
+                    steps=steps,
+                    x=bins_center,
+                    y_pos=pos_hist_sample_ma,
+                    y_neg=neg_hist_sample_ma,
+                    l_s=bins[0],
+                    r_s=bins[-1],
+                    target_acc=gamma_F,
+                )
+
+                # Map bounds to original bin edges as done in ScaleDoc's apply_bounds
+                le_matches = np.where(steps == le)[0]
+                le_step_idx = (
+                    int(le_matches[0])
+                    if len(le_matches) > 0
+                    else int(np.argmin(np.abs(steps - le)))
+                )
+                le_idx = max(0, le_step_idx * 2 - 1)
+
+                re_matches = np.where(steps == re)[0]
+                re_step_idx = (
+                    int(re_matches[0])
+                    if len(re_matches) > 0
+                    else int(np.argmin(np.abs(steps - re)))
+                )
+                re_idx = min(len(bins) - 1, re_step_idx * 2 + 1)
+
+                tau_neg = float(bins[le_idx])
+                tau_pos = float(bins[re_idx])
+            except Exception as e:
+                warnings.warn(f"ScaleDoc calibration error: {e}")
+                tau_pos = float(np.max(scores)) if pop_size > 0 else 1.0
+                tau_neg = float(np.min(scores)) if pop_size > 0 else 0.0
+
+            return evaluate_cascade_trial(
+                scores=scores,
+                labels=labels,
+                tau_pos=tau_pos,
+                tau_neg=tau_neg,
+                calib_indices=calib_samples,
+            )
 
 
 def summarize_runner_trials(

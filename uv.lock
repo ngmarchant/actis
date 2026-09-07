@@ -41,6 +41,9 @@ experiments = [
     { name = "datasets" },
     { name = "lotus-ai" },
     { name = "plotnine" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -54,7 +57,9 @@ requires-dist = [
     { name = "pybind11", specifier = ">=2.12.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.2" },
+    { name = "scikit-learn", marker = "extra == 'experiments'" },
     { name = "scipy" },
+    { name = "torch", marker = "extra == 'experiments'" },
 ]
 provides-extras = ["dev", "experiments"]
 

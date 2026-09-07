@@ -1,0 +1,4 @@
+[submodule "externals/ScaleDoc"]
+	path = externals/ScaleDoc
+	url = https://github.com/Seurgul/ScaleDoc.git
+	ignore = untracked

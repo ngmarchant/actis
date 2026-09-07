@@ -16,6 +16,7 @@ from experiments.runners import (
     BargainPRRunner,
     BaseFilterRunner,
     LotusRunner,
+    ScaleDocRunner,
     print_comparison_table,
     run_evaluation_suite,
 )
@@ -190,18 +191,18 @@ def main():
     all_records = []
 
     runners: list[BaseFilterRunner] = [
-        ACTISRunner(
-            name="actis_static",
-            num_thresholds=args.num_thresholds,
-            num_thresholds_upper=args.num_thresholds_upper,
-            sampling_method="wor",
-            adaptive=False,
-            initial_sample_size=args.sample_size,
-            batch_size=args.sample_size,
-            max_sample_size=args.sample_size,
-            min_positives=args.min_positives,
-            power_law_quantiles=args.power_law_quantiles,
-        ),
+        # ACTISRunner(
+        #     name="actis_static",
+        #     num_thresholds=args.num_thresholds,
+        #     num_thresholds_upper=args.num_thresholds_upper,
+        #     sampling_method="wor",
+        #     adaptive=False,
+        #     initial_sample_size=args.sample_size,
+        #     batch_size=args.sample_size,
+        #     max_sample_size=args.sample_size,
+        #     min_positives=args.min_positives,
+        #     power_law_quantiles=args.power_law_quantiles,
+        # ),
         ACTISRunner(
             name="actis_adaptive_is",
             num_thresholds=args.num_thresholds,
@@ -251,9 +252,11 @@ def main():
             sample_step=100,
         ),
         LotusRunner(
-            name="lotus_original",
-            sample_size=args.sample_size,
+            name="lotus_original"
         ),
+        ScaleDocRunner(
+            name="scaledoc"
+        )
     ]
 
     for scenario in scenarios_to_run:
