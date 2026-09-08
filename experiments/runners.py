@@ -152,7 +152,7 @@ def evaluate_cascade_trial(
 class ACTISRunner(BaseFilterRunner):
     """Runner for ACTIS"""
 
-    num_thresholds: int = 20
+    num_thresholds: int = 50
     """Number of candidate thresholds to consider when tuning thresholds. Used for both
     lower and upper thresholds if `num_thresholds_upper` is not specified, otherwise
     just for the lower threshold."""
@@ -161,10 +161,10 @@ class ACTISRunner(BaseFilterRunner):
     """Number of candidate thresholds to consider when tuning the upper threshold. If
     None, `num_thresholds` is used for both lower and upper thresholds."""
 
-    sampling_method: Literal["wor", "is"] = "wor"
+    sampling_method: Literal["wor", "is"] = "is"
     """Method to use when sampling dataset items to label."""
 
-    alpha: float | None = None
+    alpha: float | None = 0.4
     """Defensive mixing weight for importance sampling proposal distribution. If None
     or 0.0, no defensive mixing is applied."""
 
@@ -175,14 +175,14 @@ class ACTISRunner(BaseFilterRunner):
     """Whether to use power-law quantiles for the upper threshold grid when
     `num_thresholds_upper` is specified."""
 
-    conf_seq: Literal["finite", "asymptotic"] = "finite"
+    conf_seq: Literal["finite", "asymptotic"] = "asymptotic"
     """Confidence sequence type to use."""
 
     v_0: float | tuple[FloatArray, FloatArray] | Literal["auto"] = "auto"
     """Prior variance for asymptotic Gaussian mixture supermartingale if `conf_seq` is
     "asymptotic"."""
 
-    adaptive: bool = False
+    adaptive: bool = True
     """Whether to use adaptive sampling expansion."""
 
     initial_sample_size: int | Literal["auto"] = "auto"
@@ -193,7 +193,7 @@ class ACTISRunner(BaseFilterRunner):
     batch_size: int = 100
     """Batch size for adaptive sampling expansion. Ignored if `adaptive` is False."""
 
-    max_sample_size: int | float | None = None
+    max_sample_size: int | float | None = 0.5
     """Maximum sample size for adaptive sampling expansion. If a float in (0, 1], it is
     interpreted as a fraction of the dataset size. If an integer >= 1, it is interpreted
     as an absolute sample size. Ignored if None or `adaptive` is False."""
