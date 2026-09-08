@@ -44,6 +44,36 @@ def parse_sample_size_or_fraction(val: str) -> int | float:
     )
 
 
+def parse_min_positives(val: str) -> int | str:
+    """Parses min_positives as either a positive integer or 'auto'."""
+    if val.lower() == "auto":
+        return "auto"
+    try:
+        val_int = int(val)
+        if val_int <= 0:
+            raise ValueError
+        return val_int
+    except ValueError:
+        raise ArgumentTypeError(
+            f"--min-positives must be a positive integer or 'auto'. Got: '{val}'"
+        )
+
+
+def parse_sample_size(val: str) -> int | str:
+    """Parses initial sample size as either a positive integer count or 'auto'."""
+    if val.lower() == "auto":
+        return "auto"
+    try:
+        val_int = int(val)
+        if val_int <= 0:
+            raise ValueError
+        return val_int
+    except ValueError:
+        raise ArgumentTypeError(
+            f"--sample-size must be a positive integer or 'auto'. Got: '{val}'"
+        )
+
+
 def parse_args():
     parser = ArgumentParser(description="Compare LOTUS vs BARGAIN (unconstrained).")
     parser.add_argument(
@@ -63,9 +93,9 @@ def parse_args():
     )
     parser.add_argument(
         "--sample-size",
-        type=int,
-        default=1000,
-        help="ACTIS initial sample size (default: 1000)"
+        type=parse_sample_size,
+        default="auto",
+        help="ACTIS initial sample size: positive integer count or 'auto' (default: 'auto')",
     )
     parser.add_argument(
         "--batch-size",
@@ -155,9 +185,9 @@ def parse_args():
     )
     parser.add_argument(
         "--min-positives",
-        type=int,
-        default=30,
-        help="Minimum number of positive labels before adaptive stopping (default: 30)",
+        type=parse_min_positives,
+        default="auto",
+        help="Minimum number of positive labels before adaptive stopping (default: 'auto')",
     )
     parser.add_argument(
         "--v0",

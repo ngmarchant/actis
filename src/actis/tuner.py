@@ -26,6 +26,15 @@ class AsymptoticValidityDiagnostics:
     num_positives: int
     min_positives: int
     num_samples: int
+    k_upper: int | None = None
+    k_lower: int | None = None
+    tau_pos: float | None = None
+    tau_neg: float | None = None
+    num_tp: int = 0
+    num_fn: int = 0
+    num_fp: int = 0
+    is_tau_neg_anchor: bool = False
+    is_tau_pos_anchor: bool = False
 
     def is_valid(self) -> bool:
         return len(self.diagnose()) == 0
@@ -35,26 +44,37 @@ class AsymptoticValidityDiagnostics:
         issues = []
         ratio_recall = self.v_t_recall / max(self.v_0_recall, 1e-9)
         ratio_precision = self.v_t_precision / max(self.v_0_precision, 1e-9)
-        if self.v_t_recall <= 0.0:
-            issues.append(
-                "Recall empirical variance accumulator V_t is 0.0 (too few positive "
-                "events for CLT)."
-            )
-        elif ratio_recall < 0.1:
-            issues.append(
-                f"Recall empirical variance ratio V_t / v_0 is low ({ratio_recall:.3f} "
-                f"< 0.1)."
-            )
 
-        if self.v_t_precision <= 0.0:
-            issues.append(
-                "Precision empirical variance accumulator V_t is 0.0."
-            )
-        elif ratio_precision < 0.1:
-            issues.append(
-                f"Precision empirical variance ratio V_t / v_0 is low "
-                f"({ratio_precision:.3f} < 0.1)."
-            )
+        if not self.is_tau_neg_anchor:
+            if self.v_t_recall <= 0.0:
+                issues.append(
+                    "Recall empirical variance accumulator V_t is 0.0 (too few positive "
+                    "events for CLT)."
+                )
+            elif ratio_recall < 0.05:
+                issues.append(
+                    f"Recall empirical variance ratio V_t / v_0 is low ({ratio_recall:.3f} "
+                    f"< 0.05)."
+                )
+            if self.num_tp < 5:
+                issues.append(
+                    f"Observed true positives ({self.num_tp}) below recommended threshold of 5."
+                )
+
+        if not self.is_tau_pos_anchor:
+            if self.v_t_precision <= 0.0:
+                issues.append(
+                    "Precision empirical variance accumulator V_t is 0.0."
+                )
+            elif ratio_precision < 0.05:
+                issues.append(
+                    f"Precision empirical variance ratio V_t / v_0 is low "
+                    f"({ratio_precision:.3f} < 0.05)."
+                )
+            if self.num_tp < 5:
+                issues.append(
+                    f"Observed true positives ({self.num_tp}) below recommended threshold of 5."
+                )
 
         if self.num_positives < self.min_positives:
             issues.append(
@@ -62,10 +82,11 @@ class AsymptoticValidityDiagnostics:
                 f" ({self.min_positives})."
             )
 
-        if self.num_samples < 30:
+        min_req_samples = 30 if self.min_positives >= 10 else max(10, self.min_positives)
+        if self.num_samples < min_req_samples:
             issues.append(
                 f"Total calibration sample size ({self.num_samples}) below recommended "
-                f"minimum of 30."
+                f"minimum of {min_req_samples}."
             )
 
         return issues
@@ -557,7 +578,7 @@ def compute_prior_var(
     thresholds: Sequence[float] | NDArray[np.float64] | None = None,
     thresholds_upper: Sequence[float] | NDArray[np.float64] | None = None,
     weights: ArrayLike | None = None,
-    n_0: float = 1.0,
+    n_0: float | Literal["auto"] = "auto",
 ) -> float | tuple[NDArray[np.float64], NDArray[np.float64]]:
     r"""Computes prior variance parameters $v_0$ for the asymptotic Gaussian mixture
     supermartingales used in ACTIS cascade tuning.
@@ -576,7 +597,8 @@ def compute_prior_var(
         thresholds_upper: Optional candidate grid for tuning the upper threshold.
             Defaults to `thresholds`.
         weights: Optional importance weights $w(x) = 1 / (N \cdot q(x))$.
-        n_0: Effective prior sample weight (default: 1.0 pseudo-observation).
+        n_0: Effective prior sample horizon. If "auto" (default), dynamically scaled
+            to min(1000.0, max(50.0, 0.10 * N)).
 
     Returns:
         If `thresholds` is provided, a tuple of two arrays:
@@ -597,6 +619,11 @@ def compute_prior_var(
     else:
         weights = np.ones(N, dtype=np.float64)
 
+    if n_0 == "auto":
+        eff_n_0 = float(min(1000.0, max(50.0, 0.10 * N)))
+    else:
+        eff_n_0 = float(n_0)
+
     # Split family-wise error rate delta equally between recall and precision
     delta_R = delta / 2.0
     delta_P = delta / 2.0
@@ -606,11 +633,11 @@ def compute_prior_var(
 
     # Fallback when no threshold grid is specified
     if thresholds is None:
-        b = max(1.0 - gamma_R, 1.0 - gamma_P) * max_weight
+        b = max(1.0 - gamma_R, gamma_R, 1.0 - gamma_P, gamma_P) * max_weight
         v_0_floor = (2.0 * b**2) / log_delta_R_inv
         weighted_pos_mass = float(np.mean(scores * weights))
         sigma2 = max(weighted_pos_mass, 1.0 / N) * gamma_R * (1.0 - gamma_R)
-        v_0_target = n_0 * sigma2
+        v_0_target = eff_n_0 * sigma2
         return float(max(v_0_floor, v_0_target))
 
     thresholds = np.asarray(thresholds, dtype=np.float64)
@@ -649,6 +676,10 @@ def compute_prior_var(
         0.0
     )
 
+    # Prefix accumulations for items with s_i < tau:
+    prefix_max_weight = np.maximum.accumulate(weights_sorted)
+    prefix_max_weight_with_zero = np.insert(prefix_max_weight, 0, 0.0)
+
     # Total expected positive mass in the population
     total_pos_mass = suffix_sum_pos_prob[0] / N
 
@@ -657,41 +688,44 @@ def compute_prior_var(
     # -------------------------------------------------------------------------
     idx_lower = np.searchsorted(scores_sorted, thresholds, side="left")
     w_max_lower = suffix_max_weight[idx_lower]
+    w_max_lt_lower = prefix_max_weight_with_zero[idx_lower]
 
     # Positive probability mass above and below each candidate lower threshold
     pos_mass_ge_lower = suffix_sum_pos_prob[idx_lower] / N
     pos_mass_lt_lower = np.maximum(0.0, total_pos_mass - pos_mass_ge_lower)
 
-    # Safety floor for recall
-    b_R = (1.0 - gamma_R) * w_max_lower
+    # Safety floor for recall (incorporates both positive and negative jumps)
+    b_R = np.maximum((1.0 - gamma_R) * w_max_lower, gamma_R * w_max_lt_lower)
     v_0_floor_recall = (2.0 * b_R**2) / log_delta_R_inv
 
     # Estimated second moment of the recall margin increment
     sigma2_recall = (
         (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R ** 2) * pos_mass_lt_lower
     )
-    v_0_target_recall = n_0 * sigma2_recall
+    v_0_target_recall = eff_n_0 * sigma2_recall
     v_0_recall = np.maximum(v_0_floor_recall, v_0_target_recall)
 
     # -------------------------------------------------------------------------
     # 2. Precision prior variance per (upper, lower) threshold pair
     # -------------------------------------------------------------------------
-    # Safety floor for precision (governed by positive increments above each lower
-    # threshold)
-    b_P = (1.0 - gamma_P) * w_max_lower
-    v_0_floor_precision = (2.0 * b_P**2) / log_delta_P_inv
-
     # Negative probability mass above each candidate upper threshold
     idx_upper = np.searchsorted(scores_sorted, thresholds_upper, side="left")
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
     neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper
     pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
 
+    w_max_upper = suffix_max_weight[idx_upper]
+    b_P = np.maximum(
+        (1.0 - gamma_P) * w_max_lower[np.newaxis, :],
+        gamma_P * w_max_upper[:, np.newaxis]
+    )
+    v_0_floor_precision = (2.0 * b_P**2) / log_delta_P_inv
+
     # 2D second moment matrix: sum of false-positive variance (from upper threshold)
     # and true-positive variance (from lower threshold) via NumPy broadcasting
     total_var = neg_var_upper[:, np.newaxis] + pos_var_lower[np.newaxis, :]
-    v_0_target_precision = n_0 * total_var
-    v_0_precision = np.maximum(v_0_floor_precision[np.newaxis, :], v_0_target_precision)
+    v_0_target_precision = eff_n_0 * total_var
+    v_0_precision = np.maximum(v_0_floor_precision, v_0_target_precision)
 
     return (v_0_recall, v_0_precision)
 
@@ -821,6 +855,16 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         assert isinstance(mart_R, GaussianMixtureSupermartingale)
         assert isinstance(mart_P, GaussianMixtureSupermartingale)
 
+        tau_lower = float(self.thresholds[k_lower])
+        tau_upper = float(self.thresholds_upper[k_upper])
+
+        num_tp = int(np.sum(self.labels & (self.scores >= tau_lower)))
+        num_fn = int(np.sum(self.labels & (self.scores < tau_lower)))
+        num_fp = int(np.sum((~self.labels) & (self.scores >= tau_upper)))
+
+        is_tau_neg_anchor = (k_lower == 0)
+        is_tau_pos_anchor = (k_upper == len(self.thresholds_upper) - 1)
+
         diagnostics = AsymptoticValidityDiagnostics(
             v_t_recall=float(mart_R.v_t),
             v_t_precision=float(mart_P.v_t),
@@ -829,6 +873,15 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             num_positives=int(np.sum(self.labels)),
             min_positives=min_positives,
             num_samples=num_samples,
+            k_upper=k_upper,
+            k_lower=k_lower,
+            tau_pos=tau_upper,
+            tau_neg=tau_lower,
+            num_tp=num_tp,
+            num_fn=num_fn,
+            num_fp=num_fp,
+            is_tau_neg_anchor=is_tau_neg_anchor,
+            is_tau_pos_anchor=is_tau_pos_anchor,
         )
 
         return diagnostics.is_valid(), diagnostics
@@ -1005,7 +1058,8 @@ class ACTIS:
         else:
             eff_p = float(self.p_floor)
 
-        return min(cap, max(5, int(np.ceil(np.round(eff_p * pop_size, 9)))))
+        min_req = max(5, int(np.ceil(np.round(eff_p * pop_size, 9))))
+        return min(pop_size, min(cap, min_req))
 
     def add_samples(
         self,
