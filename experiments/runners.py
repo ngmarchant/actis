@@ -441,7 +441,8 @@ class LotusRunner(BaseFilterRunner):
             precision_target=gamma_P,
             failure_probability=delta,
             sampling_percentage=self.sampling_percentage,
-            cascade_IS_random_seed=int(rng.integers(0, 2**31 - 1))
+            cascade_IS_max_sample_range=len(scores),
+            cascade_IS_random_seed=int(rng.integers(0, 2**31 - 1)),
         )
 
         sample_idx, weights = importance_sampling(
@@ -451,12 +452,13 @@ class LotusRunner(BaseFilterRunner):
 
         s_scores = scores[sample_idx].tolist()
         s_oracle = labels[sample_idx].tolist()
+        s_weights = weights[sample_idx]
 
         try:
             (tau_pos, tau_neg), _ = learn_cascade_thresholds(
                 proxy_scores=s_scores,
                 oracle_outputs=s_oracle,
-                sample_correction_factors=weights,
+                sample_correction_factors=s_weights,
                 cascade_args=cascade_args,
             )
         except Exception as e:
