@@ -13,6 +13,7 @@ benchmarking.
 import math
 import random
 import sys
+import time
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -79,6 +80,8 @@ class TrialResult:
     tau_pos: float | None = None
     tau_neg: float | None = None
     is_asymptotically_valid: bool | None = None
+    runtime: float | None = None
+
 
 
 @dataclass(kw_only=True)
@@ -811,7 +814,16 @@ def summarize_runner_trials(
     if valid_flags:
         summary["asymptotic_validity_rate"] = float(np.mean(valid_flags))
 
+    runtimes = [r.runtime for r in results if r.runtime is not None]
+    if runtimes:
+        runtime_arr = np.array(runtimes)
+        summary["mean_runtime"] = float(np.mean(runtime_arr))
+        summary["std_runtime"] = float(np.std(runtime_arr))
+        summary["se_runtime"] = float(np.std(runtime_arr) / np.sqrt(len(runtimes)))
+        summary["raw_runtimes"] = runtime_arr.tolist()
+
     return summary
+
 
 
 def run_evaluation_suite(
@@ -829,8 +841,6 @@ def run_evaluation_suite(
     Executes paired Monte Carlo trials across configured runners on identical population
     instances.
     """
-    import time
-
     ss = np.random.SeedSequence(seed)
     pop_ss, *trial_seeds = ss.spawn(1 + num_trials)
 
@@ -867,6 +877,7 @@ def run_evaluation_suite(
         for runner in runners:
             runner_rng = np.random.default_rng(trial_seed)
 
+            t0 = time.perf_counter()
             res = runner.run_trial(
                 scores=pop_scores,
                 labels=pop_oracle,
@@ -875,6 +886,7 @@ def run_evaluation_suite(
                 delta=delta,
                 rng=runner_rng,
             )
+            res.runtime = time.perf_counter() - t0
 
             runner_results[runner.name].append(res)
 
