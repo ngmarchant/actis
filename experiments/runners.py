@@ -34,7 +34,7 @@ from numpy.typing import NDArray
 from actis import ACTIS, ProposalMethod, compute_pr_proposal
 from actis.sampler import PopulationSampler
 from actis.threshold_grid import quantile_power_law_grid
-from actis.tuner import compute_prior_var
+from actis.tuner import PriorAndTargetVar, compute_prior_and_target_var
 from experiments.scenarios import BaseScenario
 
 _SCALEDOC_DIR = (
@@ -181,7 +181,7 @@ class ACTISRunner(BaseFilterRunner):
     conf_seq: Literal["finite", "asymptotic"] = "asymptotic"
     """Confidence sequence type to use."""
 
-    v_0: float | tuple[FloatArray, FloatArray] | Literal["auto"] = "auto"
+    v_0: float | PriorAndTargetVar | Literal["auto"] = "auto"
     """Prior variance for asymptotic Gaussian mixture supermartingale if `conf_seq` is
     "asymptotic"."""
 
@@ -204,6 +204,10 @@ class ACTISRunner(BaseFilterRunner):
     min_positives: int | Literal["auto"] = "auto"
     """Minimum number of positive labels to observe before stopping adaptive sampling.
     If "auto", dynamically calibrated based on delta, pop_size, and proxy scores."""
+
+    min_true_positives: int = 5
+    """Minimum number of true positive labels required above candidate lower threshold
+    for asymptotic certification."""
 
     p_floor: float | Literal["auto"] = "auto"
     """Lower-bound positive prevalence for population scaling of `min_positives`.
@@ -321,7 +325,7 @@ class ACTISRunner(BaseFilterRunner):
         )
 
         if self.v_0 is None or self.v_0 == "auto":
-            v_0_val = compute_prior_var(
+            v_0 = compute_prior_and_target_var(
                 scores=scores,
                 gamma_R=gamma_R,
                 gamma_P=gamma_P,
@@ -331,7 +335,7 @@ class ACTISRunner(BaseFilterRunner):
                 weights=weights,
             )
         elif self.v_0 in ("global", "global_calibrated"):
-            v_0_val = compute_prior_var(
+            v_0 = compute_prior_and_target_var(
                 scores=scores,
                 gamma_R=gamma_R,
                 gamma_P=gamma_P,
@@ -340,7 +344,7 @@ class ACTISRunner(BaseFilterRunner):
                 weights=weights,
             )
         else:
-            v_0_val = self.v_0
+            v_0 = self.v_0
 
         tuner = ACTIS(
             gamma_R=gamma_R,
@@ -351,8 +355,9 @@ class ACTISRunner(BaseFilterRunner):
             pop_size=pop_size_param,
             horizon=None if self.adaptive else init_sample_size,
             conf_seq=self.conf_seq,
-            v_0=v_0_val,
+            v_0=v_0,
             min_positives=self.min_positives,
+            min_true_positives=self.min_true_positives,
             p_floor=self.p_floor,
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,

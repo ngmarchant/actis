@@ -3,14 +3,16 @@ from .tuner import (
     ACTIS,
     AsymptoticValidityDiagnostics,
     CascadeThresholds,
-    compute_prior_var,
+    PriorAndTargetVar,
+    compute_prior_and_target_var,
 )
 
 __all__ = [
     "ACTIS",
     "AsymptoticValidityDiagnostics",
     "CascadeThresholds",
-    "compute_prior_var",
+    "PriorAndTargetVar",
+    "compute_prior_and_target_var",
     "compute_pr_proposal",
     "ProposalMethod",
 ]

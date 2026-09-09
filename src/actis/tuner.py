@@ -21,20 +21,19 @@ class AsymptoticValidityDiagnostics:
     reliable."""
     v_t_recall: float
     v_t_precision: float
-    v_0_recall: float
-    v_0_precision: float
-    num_positives: int
-    min_positives: int
+    v_0_target_recall: float
+    v_0_target_precision: float
+    rho_max_recall: float
+    rho_max_precision: float
     num_samples: int
-    k_upper: int | None = None
-    k_lower: int | None = None
-    tau_pos: float | None = None
-    tau_neg: float | None = None
-    num_tp: int = 0
-    num_fn: int = 0
-    num_fp: int = 0
-    is_tau_neg_anchor: bool = False
-    is_tau_pos_anchor: bool = False
+    num_positives: int
+    num_true_positives: int
+    is_tau_neg_anchor: bool
+    is_tau_pos_anchor: bool
+    min_positives: int = 30
+    min_true_positives: int = 5
+    max_jump_ratio_bound: float = 0.50
+    variance_ratio_bound: float = 0.05
 
     def is_valid(self) -> bool:
         return len(self.diagnose()) == 0
@@ -42,38 +41,54 @@ class AsymptoticValidityDiagnostics:
     def diagnose(self) -> list[str]:
         """Returns a list of diagnostic messages for the asymptotic validity check."""
         issues = []
-        ratio_recall = self.v_t_recall / max(self.v_0_recall, 1e-9)
-        ratio_precision = self.v_t_precision / max(self.v_0_precision, 1e-9)
+        warned_tp = False
 
         if not self.is_tau_neg_anchor:
+            ratio_recall = self.v_t_recall / max(self.v_0_target_recall, 1e-9)
             if self.v_t_recall <= 0.0:
                 issues.append(
-                    "Recall empirical variance accumulator V_t is 0.0 (too few positive "
-                    "events for CLT)."
+                    "Recall empirical variance accumulator V_t is 0.0 (too few "
+                    "positive events for CLT)."
                 )
-            elif ratio_recall < 0.05:
+            elif ratio_recall < self.variance_ratio_bound:
                 issues.append(
-                    f"Recall empirical variance ratio V_t / v_0 is low ({ratio_recall:.3f} "
-                    f"< 0.05)."
+                    f"Recall empirical variance ratio V_t / v_0 is low "
+                    f"({ratio_recall:.4g} < {self.variance_ratio_bound:.4g})."
                 )
-            if self.num_tp < 5:
+            if self.rho_max_recall > self.max_jump_ratio_bound:
                 issues.append(
-                    f"Observed true positives ({self.num_tp}) below recommended threshold of 5."
+                    f"Recall maximum jump dispersion ratio rho_max is high "
+                    f"({self.rho_max_recall:.4g} > {self.max_jump_ratio_bound:.4g}, "
+                    f"violates Lindeberg condition)."
                 )
+            if self.num_true_positives < self.min_true_positives:
+                issues.append(
+                    f"Observed true positives ({self.num_true_positives}) below "
+                    f"recommended threshold of {self.min_true_positives}."
+                )
+                warned_tp = True
 
         if not self.is_tau_pos_anchor:
+            ratio_precision = self.v_t_precision / max(self.v_0_target_precision, 1e-9)
             if self.v_t_precision <= 0.0:
                 issues.append(
                     "Precision empirical variance accumulator V_t is 0.0."
                 )
-            elif ratio_precision < 0.05:
+            elif ratio_precision < self.variance_ratio_bound:
                 issues.append(
                     f"Precision empirical variance ratio V_t / v_0 is low "
-                    f"({ratio_precision:.3f} < 0.05)."
+                    f"({ratio_precision:.4g} < {self.variance_ratio_bound:.4g})."
                 )
-            if self.num_tp < 5:
+            if self.rho_max_precision > self.max_jump_ratio_bound:
                 issues.append(
-                    f"Observed true positives ({self.num_tp}) below recommended threshold of 5."
+                    f"Precision maximum jump dispersion ratio rho_max is high "
+                    f"({self.rho_max_precision:.4g} > {self.max_jump_ratio_bound:.4g}, "
+                    f"violates Lindeberg condition)."
+                )
+            if self.num_true_positives < self.min_true_positives and not warned_tp:
+                issues.append(
+                    f"Observed true positives ({self.num_true_positives}) below "
+                    f"recommended threshold of {self.min_true_positives}."
                 )
 
         if self.num_positives < self.min_positives:
@@ -82,11 +97,11 @@ class AsymptoticValidityDiagnostics:
                 f" ({self.min_positives})."
             )
 
-        min_req_samples = 30 if self.min_positives >= 10 else max(10, self.min_positives)
-        if self.num_samples < min_req_samples:
+        min_samples = 30 if self.min_positives >= 10 else max(10, self.min_positives)
+        if self.num_samples < min_samples:
             issues.append(
                 f"Total calibration sample size ({self.num_samples}) below recommended "
-                f"minimum of {min_req_samples}."
+                f"minimum of {min_samples}."
             )
 
         return issues
@@ -351,7 +366,8 @@ class CascadeConfSeqs(ABC):
         k_upper: int,
         k_lower: int,
         num_samples: int,
-        min_positives: int = 30,
+        min_positives: int,
+        min_true_positives: int
     ) -> tuple[bool | None, AsymptoticValidityDiagnostics | None]:
         """Checks asymptotic validity of the confidence sequences for the selected
         thresholds.
@@ -570,7 +586,73 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         return np.zeros_like(unscaled_rvs)
 
 
-def compute_prior_var(
+@dataclass
+class PriorAndTargetVar:
+    """Tuple of (v_0_recall, v_0_precision) that also holds expected process target
+    variances (v_0_target_recall, v_0_target_precision)."""
+
+    def __init__(
+        self,
+        prior_recall: float | NDArray[np.float64],
+        prior_precision: float | NDArray[np.float64] | None = None,
+        target_recall: float | NDArray[np.float64] | None = None,
+        target_precision: float | NDArray[np.float64] | None = None
+    ) -> None:
+        self._prior_recall = np.asarray(prior_recall, dtype=np.float64)
+        if np.any(self._prior_recall <= 0.0):
+            raise ValueError("All entries of prior_recall must be positive.")
+
+        if prior_precision is not None:
+            self._prior_precision = np.asarray(prior_precision, dtype=np.float64)
+            if np.any(self._prior_precision <= 0.0):
+                raise ValueError("All entries of prior_precision must be positive.")
+        else:
+            self._prior_precision = self._prior_recall
+
+        if target_recall is not None:
+            self._target_recall = np.asarray(target_recall, dtype=np.float64)
+            if np.any(self._target_recall < 0.0):
+                raise ValueError("All entries of target_recall must be non-negative.")
+            if np.shape(self._target_recall) != np.shape(self._prior_recall):
+                raise ValueError(
+                    "target_recall must have the same shape as prior_recall."
+                )
+        else:
+            self._target_recall = self._prior_recall
+
+        if target_precision is not None:
+            self._target_precision = np.asarray(target_precision, dtype=np.float64)
+            if np.any(self._target_precision < 0.0):
+                raise ValueError("All entries of target_precision must be non-negative.")
+            if np.shape(self._target_precision) != np.shape(self._prior_precision):
+                raise ValueError(
+                    "target_precision must have the same shape as prior_precision."
+                )
+        else:
+            self._target_precision = self._prior_precision
+
+    def prior_recall(self, k: int) -> float:
+        if self._prior_recall.shape == ():
+            return float(self._prior_recall)
+        return float(self._prior_recall[k])
+
+    def prior_precision(self, k_upper: int, k_lower: int) -> float:
+        if self._prior_precision.shape == ():
+            return float(self._prior_precision)
+        return float(self._prior_precision[k_upper, k_lower])
+
+    def target_recall(self, k: int) -> float:
+        if self._target_recall.shape == ():
+            return float(self._target_recall)
+        return float(self._target_recall[k])
+
+    def target_precision(self, k_upper: int, k_lower: int) -> float:
+        if self._target_precision.shape == ():
+            return float(self._target_precision)
+        return float(self._target_precision[k_upper, k_lower])
+
+
+def compute_prior_and_target_var(
     scores: ArrayLike,
     gamma_R: float,
     gamma_P: float,
@@ -579,9 +661,10 @@ def compute_prior_var(
     thresholds_upper: Sequence[float] | NDArray[np.float64] | None = None,
     weights: ArrayLike | None = None,
     n_0: float | Literal["auto"] = "auto",
-) -> float | tuple[NDArray[np.float64], NDArray[np.float64]]:
-    r"""Computes prior variance parameters $v_0$ for the asymptotic Gaussian mixture
-    supermartingales used in ACTIS cascade tuning.
+) -> PriorAndTargetVar:
+    r"""Computes prior variance parameters (with safety floor) and expected cumulative
+    process target variances for the asymptotic Gaussian mixture supermartingales used
+    in ACTIS cascade tuning.
 
     Args:
         scores: Proxy scores in $[0, 1]$ across the population dataset.
@@ -592,8 +675,9 @@ def compute_prior_var(
             None, this function assumes the same grid is used for tuning the upper and
             lower thresholds. Otherwise, this function assumes the grid is used for the
             lower threshold and `thresholds_upper` is used for the upper threshold. If
-            provided, returns a tuple of tailored prior variance arrays
-            `(v_0_recall, v_0_precision)`.
+            provided, returns a `PriorAndTargetVar` containing tailored prior variance
+            arrays `(v_0_recall, v_0_precision)` and target variances
+            `(v_0_target_recall, v_0_target_precision)`.
         thresholds_upper: Optional candidate grid for tuning the upper threshold.
             Defaults to `thresholds`.
         weights: Optional importance weights $w(x) = 1 / (N \cdot q(x))$.
@@ -601,13 +685,7 @@ def compute_prior_var(
             to min(1000.0, max(50.0, 0.10 * N)).
 
     Returns:
-        If `thresholds` is provided, a tuple of two arrays:
-            - 1D array of shape `(num_lower,)` containing $v_0$ for each candidate lower
-              threshold.
-            - 2D array of shape `(num_upper, num_lower)` containing $v_0$ for each
-              (upper, lower) threshold pair.
-        If `thresholds` is None, returns a scalar float $v_0$ suitable for a single
-        global test.
+        A `PriorAndTargetVar` instance.
     """
     scores = np.asarray(scores, dtype=np.float64)
     if scores.ndim != 1 or len(scores) == 0:
@@ -620,7 +698,7 @@ def compute_prior_var(
         weights = np.ones(N, dtype=np.float64)
 
     if n_0 == "auto":
-        eff_n_0 = float(min(1000.0, max(50.0, 0.10 * N)))
+        eff_n_0 = min(1000.0, max(50.0, 0.10 * N))
     else:
         eff_n_0 = float(n_0)
 
@@ -638,7 +716,7 @@ def compute_prior_var(
         weighted_pos_mass = float(np.mean(scores * weights))
         sigma2 = max(weighted_pos_mass, 1.0 / N) * gamma_R * (1.0 - gamma_R)
         v_0_target = eff_n_0 * sigma2
-        return float(max(v_0_floor, v_0_target))
+        return PriorAndTargetVar(max(v_0_floor, v_0_target), target_recall=v_0_target)
 
     thresholds = np.asarray(thresholds, dtype=np.float64)
     M_lower = len(thresholds)
@@ -727,7 +805,12 @@ def compute_prior_var(
     v_0_target_precision = eff_n_0 * total_var
     v_0_precision = np.maximum(v_0_floor_precision, v_0_target_precision)
 
-    return (v_0_recall, v_0_precision)
+    return PriorAndTargetVar(
+        prior_recall=v_0_recall,
+        prior_precision=v_0_precision,
+        target_recall=v_0_target_recall,
+        target_precision=v_0_target_precision,
+    )
 
 
 class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
@@ -741,7 +824,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         delta: float,
         thresholds: NDArray[np.float64],
         thresholds_upper: NDArray[np.float64],
-        v_0: float | tuple[NDArray[np.float64], NDArray[np.float64]] = 0.01,
+        v_0: float | PriorAndTargetVar = 0.01,
+        max_jump_ratio_bound: float = 0.50,
     ) -> None:
         r"""
         Args:
@@ -757,44 +841,24 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             thresholds_upper: Optional separate grid of candidate thresholds in $[0, 1]$
                 for the upper threshold. If None, defaults to `thresholds`.
             v_0: Prior variance for the Gaussian mixture supermartingale. Can be a
-                scalar float (applied globally across all tests) or a tuple
-                `(v_0_recall, v_0_precision)` containing per-threshold arrays.
-                The `v_0_recall` array should have the same shape as `thresholds` and
-                the `v_0_precision` array should have shape `(len(thresholds_upper),
-                len(thresholds))`. Defaults to 0.01.
+                scalar float or a `PriorAndTargetVar` instance. Defaults to 0.01.
+            max_jump_ratio_bound: Maximum allowable Hall & Heyde Lindeberg
+                jump-to-variance ratio $\rho_{\max} = \max_i (X_i - \bar{X})^2 / V_t$.
+                Defaults to 0.50.
         """
         super().__init__(gamma_P, gamma_R, delta, thresholds, thresholds_upper)
-        if isinstance(v_0, (tuple, list)):
-            if len(v_0) != 2:
-                raise ValueError(
-                    "`v_0` must be a tuple of 2 arrays: (v_0_recall, v_0_precision)."
-                )
-            if len(v_0[0]) != len(thresholds):
-                raise ValueError(
-                    "`v_0[0]` must have the same length as `thresholds`."
-                )
-            self.v_0_recall = np.asarray(v_0[0], dtype=np.float64)
-
-            if np.shape(v_0[1]) != (len(thresholds_upper), len(thresholds)):
-                raise ValueError(
-                    "`v_0[1]` must have shape `(len(thresholds_upper), "
-                    "len(thresholds))`."
-                )
-            self.v_0_precision = np.asarray(v_0[1], dtype=np.float64)
+        if isinstance(v_0, PriorAndTargetVar):
+            self.v_0 = v_0
         else:
-            self.v_0_recall = v_0
-            self.v_0_precision = v_0
-        self.v_0 = v_0
+            self.v_0 = PriorAndTargetVar(prior_recall=v_0)
+        self.max_jump_ratio_bound = max_jump_ratio_bound
 
     def _create_recall_mart(
         self,
         k: int,
         reverse: bool = False
     ) -> TestSupermartingale:
-        if isinstance(self.v_0_recall, np.ndarray):
-            v_0 = float(self.v_0_recall[k])
-        else:
-            v_0 = float(self.v_0_recall)
+        v_0 = float(self.v_0.prior_recall(k))
         return GaussianMixtureSupermartingale(m=0.0, v_0=v_0, reverse=reverse)
 
     def _get_recall_rvs(
@@ -817,10 +881,7 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         k_lower: int,
         reverse: bool = False,
     ) -> TestSupermartingale:
-        if isinstance(self.v_0_precision, np.ndarray):
-            v_0 = float(self.v_0_precision[k_upper, k_lower])
-        else:
-            v_0 = float(self.v_0_precision)
+        v_0 = float(self.v_0.prior_precision(k_upper, k_lower))
         return GaussianMixtureSupermartingale(m=0.0, v_0=v_0, reverse=reverse)
 
     def _get_precision_rvs(
@@ -848,6 +909,7 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         k_lower: int,
         num_samples: int,
         min_positives: int = 30,
+        min_true_positives: int = 5
     ) -> tuple[bool, AsymptoticValidityDiagnostics]:
         mart_R = self._get_recall_mart(k_lower, reverse=False)
         mart_P = self._get_precision_mart(k_upper, k_lower, reverse=False)
@@ -856,32 +918,43 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         assert isinstance(mart_P, GaussianMixtureSupermartingale)
 
         tau_lower = float(self.thresholds[k_lower])
-        tau_upper = float(self.thresholds_upper[k_upper])
 
-        num_tp = int(np.sum(self.labels & (self.scores >= tau_lower)))
-        num_fn = int(np.sum(self.labels & (self.scores < tau_lower)))
-        num_fp = int(np.sum((~self.labels) & (self.scores >= tau_upper)))
+        v_0_target_recall = float(self.v_0.target_recall(k_lower))
+        v_0_target_precision = float(self.v_0.target_precision(k_upper, k_lower))
 
-        is_tau_neg_anchor = (k_lower == 0)
-        is_tau_pos_anchor = (k_upper == len(self.thresholds_upper) - 1)
+        rvs_R = self._get_recall_rvs(
+            k_lower, self.scores, self.labels, self.weights
+        )
+        if mart_R.v_t > 0.0 and len(rvs_R) > 0:
+            mean_R = float(np.mean(rvs_R))
+            rho_max_recall = float(np.max((rvs_R - mean_R) ** 2) / mart_R.v_t)
+        else:
+            rho_max_recall = 0.0
+
+        rvs_P = self._get_precision_rvs(
+            k_upper, k_lower, self.scores, self.labels, self.weights
+        )
+        if mart_P.v_t > 0.0 and len(rvs_P) > 0:
+            mean_P = float(np.mean(rvs_P))
+            rho_max_precision = float(np.max((rvs_P - mean_P) ** 2) / mart_P.v_t)
+        else:
+            rho_max_precision = 0.0
 
         diagnostics = AsymptoticValidityDiagnostics(
             v_t_recall=float(mart_R.v_t),
             v_t_precision=float(mart_P.v_t),
-            v_0_recall=float(mart_R.v_0),
-            v_0_precision=float(mart_P.v_0),
-            num_positives=int(np.sum(self.labels)),
-            min_positives=min_positives,
+            v_0_target_recall=v_0_target_recall,
+            v_0_target_precision=v_0_target_precision,
+            rho_max_recall=rho_max_recall,
+            rho_max_precision=rho_max_precision,
             num_samples=num_samples,
-            k_upper=k_upper,
-            k_lower=k_lower,
-            tau_pos=tau_upper,
-            tau_neg=tau_lower,
-            num_tp=num_tp,
-            num_fn=num_fn,
-            num_fp=num_fp,
-            is_tau_neg_anchor=is_tau_neg_anchor,
-            is_tau_pos_anchor=is_tau_pos_anchor,
+            num_positives=int(np.sum(self.labels)),
+            num_true_positives=int(np.sum(self.labels & (self.scores >= tau_lower))),
+            is_tau_neg_anchor=(k_lower == 0),
+            is_tau_pos_anchor=(k_upper == len(self.thresholds_upper) - 1),
+            min_positives=min_positives,
+            min_true_positives=min_true_positives,
+            max_jump_ratio_bound=self.max_jump_ratio_bound,
         )
 
         return diagnostics.is_valid(), diagnostics
@@ -901,8 +974,9 @@ class ACTIS:
         pop_size: int | None = None,
         horizon: int | None = None,
         conf_seq: Literal["finite", "asymptotic"] = "finite",
-        v_0: float | tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+        v_0: float | PriorAndTargetVar = 0.01,
         min_positives: int | Literal["auto"] = "auto",
+        min_true_positives: int = 5,
         p_floor: float | Literal["auto"] = "auto",
         max_weight_ge: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_lt: Sequence[float] | NDArray[np.float64] | None = None,
@@ -932,15 +1006,14 @@ class ACTIS:
                 'asymptotic' for Gaussian mixture supermartingales.
             v_0: If `conf_seq='asymptotic'`, this parameter specifies the prior variance
                 for the Gaussian mixture supermartingale. Can be a scalar float (applied
-                globally across all tests) or a tuple `(v_0_recall, v_0_precision)`
-                containing per-threshold arrays.
-                The `v_0_recall` array should have the same shape as `thresholds` and
-                the `v_0_precision` array should have shape `(len(thresholds_upper),
-                len(thresholds))` or `(len(thresholds),)`. Defaults to 0.01.
+                globally across all tests), or a `PriorAndTargetVar` object containing
+                per-test variances. Defaults to 0.01.
             min_positives: Minimum number of positive oracle calls required for the
                 asymptotic confidence sequence to be considered valid and for early
                 stopping warmup. If "auto" (default), dynamically calibrated based on
                 delta, pop_size, and proxy scores.
+            min_true_positives: Minimum number of observed true positives required for
+                non-anchor threshold certification. Defaults to 5.
             p_floor: Assumed or estimated lower-bound positive prevalence for population
                 scaling of `min_positives`. If "auto" (default), dynamically estimated
                 from population proxy scores (discounted by 0.5 with floor 1e-4 and cap
@@ -978,17 +1051,10 @@ class ACTIS:
         self.delta = delta
         self.conf_seq = conf_seq
         self.min_positives = min_positives
+        self.min_true_positives = min_true_positives
         if p_floor != "auto" and (p_floor <= 0.0 or p_floor >= 1.0):
             raise ValueError("Parameter `p_floor` must be in (0, 1) or 'auto'.")
         self.p_floor: float | Literal["auto"] = p_floor
-        if v_0 is not None:
-            if isinstance(v_0, (list, tuple)):
-                if np.any(v_0[0] <= 0.0) or np.any(v_0[1] <= 0.0):
-                    raise ValueError("Parameter `v_0` must be non-negative.")
-            elif v_0 <= 0.0:
-                raise ValueError("Parameter `v_0` must be non-negative.")
-        self.v_0 = v_0 if v_0 is not None else 0.01
-
         self.thresholds = validate_thresholds(thresholds, "thresholds")
         self.thresholds_upper = (
             validate_thresholds(thresholds_upper, "thresholds_upper")
@@ -1003,7 +1069,7 @@ class ACTIS:
                 delta=delta,
                 thresholds=self.thresholds,
                 thresholds_upper=self.thresholds_upper,
-                v_0=self.v_0,
+                v_0=v_0
             )
         elif self.conf_seq == "finite":
             self.conf_seqs = FiniteSampleCascadeConfSeqs(
@@ -1116,7 +1182,7 @@ class ACTIS:
                 tau_lower=tau_lower,
             )
 
-        min_pos = self._resolve_min_positives(
+        min_positives = self._resolve_min_positives(
             N=len(population_scores) if population_scores is not None else None,
             scores=population_scores,
         )
@@ -1125,7 +1191,8 @@ class ACTIS:
                 k_upper=k_upper,
                 k_lower=k_lower,
                 num_samples=len(self.seen_indices),
-                min_positives=min_pos,
+                min_positives=min_positives,
+                min_true_positives=self.min_true_positives,
             )
         )
 
