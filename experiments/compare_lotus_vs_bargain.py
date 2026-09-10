@@ -195,6 +195,33 @@ def parse_args():
         default="auto",
         help="Prior variance for Gaussian mixture asymptotic CS (default: 'auto')",
     )
+    parser.add_argument(
+        "--enable-asymptotic-protection",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Whether to enable heuristic protection for anytime-valid FWER control when "
+        "operating in the non-asymptotic regime (default: True)",
+    )
+    parser.add_argument(
+        "--conservative-correction",
+        action=BooleanOptionalAction,
+        default=False,
+        help="Whether to apply a conservative correction to the binomial null failure "
+        "probability for the precision supermartingale (default: False)",
+    )
+    parser.add_argument(
+        "--variance-ratio-bound",
+        type=float,
+        default=0.05,
+        help="Maximum allowable ratio of cumulative process variance to prior variance "
+        "(default: 0.05)",
+    )
+    parser.add_argument(
+        "--max-jump-ratio-bound",
+        type=float,
+        default=0.50,
+        help="Maximum allowable Lindeberg jump-to-variance ratio (default: 0.50)",
+    )
     return parser.parse_args(), parser
 
 
@@ -233,20 +260,21 @@ def main():
         #     min_positives=args.min_positives,
         #     power_law_quantiles=args.power_law_quantiles,
         # ),
-        ACTISRunner(
-            name="actis_adaptive_is",
-            num_thresholds=args.num_thresholds,
-            num_thresholds_upper=args.num_thresholds_upper,
-            sampling_method="is",
-            alpha=args.alpha,
-            proposal_method=args.proposal_method,
-            power_law_quantiles=args.power_law_quantiles,
-            adaptive=True,
-            initial_sample_size=args.sample_size,
-            batch_size=args.batch_size,
-            max_sample_size=args.max_sample_size,
-            min_positives=args.min_positives,
-        ),
+        # ACTISRunner(
+        #     name="actis_adaptive_is",
+        #     num_thresholds=args.num_thresholds,
+        #     num_thresholds_upper=args.num_thresholds_upper,
+        #     sampling_method="is",
+        #     alpha=args.alpha,
+        #     proposal_method=args.proposal_method,
+        #     power_law_quantiles=args.power_law_quantiles,
+        #     conf_seq="finite",
+        #     adaptive=True,
+        #     initial_sample_size=args.sample_size,
+        #     batch_size=args.batch_size,
+        #     max_sample_size=args.max_sample_size,
+        #     min_positives=args.min_positives,
+        # ),
         ACTISRunner(
             name="actis_adaptive_is_asymptotic",
             num_thresholds=args.num_thresholds,
@@ -262,6 +290,28 @@ def main():
             batch_size=args.batch_size,
             max_sample_size=args.max_sample_size,
             min_positives=args.min_positives,
+            enable_asymptotic_protection=args.enable_asymptotic_protection,
+            conservative_correction=args.conservative_correction,
+            variance_ratio_bound=args.variance_ratio_bound,
+            max_jump_ratio_bound=args.max_jump_ratio_bound
+        ),
+        ACTISRunner(
+            name="actis_adaptive_asymptotic",
+            num_thresholds=args.num_thresholds,
+            num_thresholds_upper=args.num_thresholds_upper,
+            sampling_method="wor",
+            power_law_quantiles=args.power_law_quantiles,
+            conf_seq="asymptotic",
+            v_0=args.v0,
+            adaptive=True,
+            initial_sample_size=args.sample_size,
+            batch_size=args.batch_size,
+            max_sample_size=args.max_sample_size,
+            min_positives=args.min_positives,
+            enable_asymptotic_protection=args.enable_asymptotic_protection,
+            conservative_correction=args.conservative_correction,
+            variance_ratio_bound=args.variance_ratio_bound,
+            max_jump_ratio_bound=args.max_jump_ratio_bound
         ),
         ACTISRunner(
             name="actis_adaptive",
@@ -269,6 +319,7 @@ def main():
             num_thresholds_upper=args.num_thresholds_upper,
             sampling_method="wor",
             power_law_quantiles=args.power_law_quantiles,
+            conf_seq="finite",
             adaptive=True,
             initial_sample_size=args.sample_size,
             batch_size=args.batch_size,

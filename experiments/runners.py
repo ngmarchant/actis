@@ -121,8 +121,7 @@ def evaluate_cascade_trial(
     labels: BoolArray,
     tau_pos: float,
     tau_neg: float,
-    calib_indices: set[int] | list[int] | NDArray[np.int64],
-    is_asymptotically_valid: bool | None = None,
+    calib_indices: set[int] | list[int] | NDArray[np.int64]
 ) -> TrialResult:
     pop_size = len(scores)
     pred_mask = (scores >= tau_pos) | ((scores >= tau_neg) & labels)
@@ -146,8 +145,7 @@ def evaluate_cascade_trial(
         calibration_calls=calib_calls,
         deployment_calls=dep_calls,
         tau_pos=tau_pos,
-        tau_neg=tau_neg,
-        is_asymptotically_valid=is_asymptotically_valid,
+        tau_neg=tau_neg
     )
 
 
@@ -205,14 +203,25 @@ class ACTISRunner(BaseFilterRunner):
     """Minimum number of positive labels to observe before stopping adaptive sampling.
     If "auto", dynamically calibrated based on delta, pop_size, and proxy scores."""
 
-    min_true_positives: int = 5
-    """Minimum number of true positive labels required above candidate lower threshold
-    for asymptotic certification."""
-
     p_floor: float | Literal["auto"] = "auto"
     """Lower-bound positive prevalence for population scaling of `min_positives`.
     If "auto" (default), dynamically estimated from population proxy scores. If float,
     specifies the prevalence floor directly (e.g. 0.01 or 0.001)."""
+
+    enable_asymptotic_protection: bool = True
+    """Whether to enable heuristic protection for anytime-valid FWER control when
+    operating in the non-asymptotic regime."""
+
+    conservative_correction: bool = False
+    """Whether to apply a conservative correction to the significance level."""
+
+    variance_ratio_bound: float = 0.05
+    """Bound on the ratio of the variance of the test statistic to the variance of the
+    null distribution. This is used to control the false discovery rate."""
+
+    max_jump_ratio_bound: float = 0.50
+    """Bound on the ratio of the maximum jump in the test statistic to the variance of
+    the null distribution. This is used to control the false discovery rate."""
 
     def __post_init__(self):
         if self.name == "":
@@ -357,11 +366,14 @@ class ACTISRunner(BaseFilterRunner):
             conf_seq=self.conf_seq,
             v_0=v_0,
             min_positives=self.min_positives,
-            min_true_positives=self.min_true_positives,
             p_floor=self.p_floor,
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,
+            enable_asymptotic_protection=self.enable_asymptotic_protection,
+            conservative_correction=self.conservative_correction,
+            variance_ratio_bound=self.variance_ratio_bound,
+            max_jump_ratio_bound=self.max_jump_ratio_bound
         )
 
         def get_batch_size(requested: int) -> int:
@@ -416,8 +428,7 @@ class ACTISRunner(BaseFilterRunner):
             labels=labels,
             tau_pos=calib_res.tau_pos,
             tau_neg=calib_res.tau_neg,
-            calib_indices=tuner.seen_indices,
-            is_asymptotically_valid=calib_res.is_asymptotically_valid,
+            calib_indices=tuner.seen_indices
         )
 
 

@@ -14,5 +14,5 @@ __all__ = [
     "PriorAndTargetVar",
     "compute_prior_and_target_var",
     "compute_pr_proposal",
-    "ProposalMethod",
+    "ProposalMethod"
 ]

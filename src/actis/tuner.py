@@ -1,10 +1,11 @@
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
+import scipy.stats
 from numpy.typing import ArrayLike, NDArray
 
 from .confseq import (
@@ -17,91 +18,59 @@ from .threshold_grid import validate_thresholds
 
 @dataclass
 class AsymptoticValidityDiagnostics:
-    """Diagnostics for assessing whether the asymptotic confidence sequence guarantee is
-    reliable."""
-    v_t_recall: float
-    v_t_precision: float
-    v_0_target_recall: float
-    v_0_target_precision: float
-    rho_max_recall: float
-    rho_max_precision: float
-    num_samples: int
-    num_positives: int
+    """Stores diagnostics for assessing whether the asymptotic confidence sequence
+    guarantee is reliable."""
+    v_t: float
+    v_0: float
+    rho_max: float
     num_true_positives: int
-    is_tau_neg_anchor: bool
-    is_tau_pos_anchor: bool
-    min_positives: int = 30
-    min_true_positives: int = 5
-    max_jump_ratio_bound: float = 0.50
+    num_false_negatives_or_positives: int
+    null_failure_prob: float
+    metric: str = field(default="Recall")
+    thresholds: tuple[float, ...] | None = None
     variance_ratio_bound: float = 0.05
+    max_jump_ratio_bound: float = 0.5
+    delta: float = 0.05
+    p_value: float | None = None
 
     def is_valid(self) -> bool:
+        """Returns True if all diagnostic checks passed."""
         return len(self.diagnose()) == 0
 
     def diagnose(self) -> list[str]:
-        """Returns a list of diagnostic messages for the asymptotic validity check."""
-        issues = []
-        warned_tp = False
+        """Returns the list of diagnostic warning messages."""
+        issues: list[str] = []
 
-        if not self.is_tau_neg_anchor:
-            ratio_recall = self.v_t_recall / max(self.v_0_target_recall, 1e-9)
-            if self.v_t_recall <= 0.0:
-                issues.append(
-                    "Recall empirical variance accumulator V_t is 0.0 (too few "
-                    "positive events for CLT)."
-                )
-            elif ratio_recall < self.variance_ratio_bound:
-                issues.append(
-                    f"Recall empirical variance ratio V_t / v_0 is low "
-                    f"({ratio_recall:.4g} < {self.variance_ratio_bound:.4g})."
-                )
-            if self.rho_max_recall > self.max_jump_ratio_bound:
-                issues.append(
-                    f"Recall maximum jump dispersion ratio rho_max is high "
-                    f"({self.rho_max_recall:.4g} > {self.max_jump_ratio_bound:.4g}, "
-                    f"violates Lindeberg condition)."
-                )
-            if self.num_true_positives < self.min_true_positives:
-                issues.append(
-                    f"Observed true positives ({self.num_true_positives}) below "
-                    f"recommended threshold of {self.min_true_positives}."
-                )
-                warned_tp = True
-
-        if not self.is_tau_pos_anchor:
-            ratio_precision = self.v_t_precision / max(self.v_0_target_precision, 1e-9)
-            if self.v_t_precision <= 0.0:
-                issues.append(
-                    "Precision empirical variance accumulator V_t is 0.0."
-                )
-            elif ratio_precision < self.variance_ratio_bound:
-                issues.append(
-                    f"Precision empirical variance ratio V_t / v_0 is low "
-                    f"({ratio_precision:.4g} < {self.variance_ratio_bound:.4g})."
-                )
-            if self.rho_max_precision > self.max_jump_ratio_bound:
-                issues.append(
-                    f"Precision maximum jump dispersion ratio rho_max is high "
-                    f"({self.rho_max_precision:.4g} > {self.max_jump_ratio_bound:.4g}, "
-                    f"violates Lindeberg condition)."
-                )
-            if self.num_true_positives < self.min_true_positives and not warned_tp:
-                issues.append(
-                    f"Observed true positives ({self.num_true_positives}) below "
-                    f"recommended threshold of {self.min_true_positives}."
-                )
-
-        if self.num_positives < self.min_positives:
+        ratio = self.v_t / max(self.v_0, 1e-16)
+        if self.v_t <= 0.0:
             issues.append(
-                f"Observed positives ({self.num_positives}) below recommended threshold"
-                f" ({self.min_positives})."
+                f"{self.metric} empirical variance accumulator V_t is 0.0 (too few "
+                f"positive events for CLT)."
             )
-
-        min_samples = 30 if self.min_positives >= 10 else max(10, self.min_positives)
-        if self.num_samples < min_samples:
+        elif ratio < self.variance_ratio_bound:
             issues.append(
-                f"Total calibration sample size ({self.num_samples}) below recommended "
-                f"minimum of {min_samples}."
+                f"{self.metric} empirical variance ratio V_t / v_0 is low "
+                f"({ratio:.4g} < {self.variance_ratio_bound:.4g})."
+            )
+        if self.rho_max > self.max_jump_ratio_bound:
+            issues.append(
+                f"{self.metric} maximum jump dispersion ratio rho_max is high "
+                f"({self.rho_max:.4g} > {self.max_jump_ratio_bound:.4g}, "
+                f"violates Lindeberg condition)."
+            )
+        n_active = self.num_true_positives + self.num_false_negatives_or_positives
+        self.p_value = float(
+            scipy.stats.binom.cdf(
+                self.num_false_negatives_or_positives,
+                n_active,
+                self.null_failure_prob,
+            )
+        )
+        if self.p_value > self.delta:
+            issues.append(
+                f"{self.metric} binomial p-value ({self.p_value:.4g}) exceeds "
+                f"delta ({self.delta:.4g}), indicating insufficient finite-sample "
+                f"evidence under H0: {self.metric} <= {self.null_failure_prob:.4g}."
             )
 
         return issues
@@ -114,8 +83,8 @@ class CascadeThresholds:
     tau_neg: float
     num_samples: int
     predicted_oracle_rate: float | None = None
-    is_asymptotically_valid: bool | None = None
-    asymptotic_diagnostics: AsymptoticValidityDiagnostics | None = None
+    asymptotic_diag_R: AsymptoticValidityDiagnostics | None = None
+    asymptotic_diag_P: AsymptoticValidityDiagnostics | None = None
 
     @property
     def tau_upper(self) -> float:
@@ -195,18 +164,18 @@ class CascadeConfSeqs(ABC):
         self.weights: NDArray[np.float64] | None = None
 
         # Supermartingale caches
-        self._recall_marts: dict[tuple[int, bool], TestSupermartingale] = {}
-        self._precision_marts: dict[int, TestSupermartingale] = {}
-        self._precision_opt_marts: dict[int, TestSupermartingale] = {}
+        self._marts_R: dict[tuple[int, bool], TestSupermartingale] = {}
+        self._marts_P: dict[int, TestSupermartingale] = {}
+        self._opt_marts_P: dict[int, TestSupermartingale] = {}
         self._last_k_lower: int | None = None
         self._last_k_lower_opt: int | None = None
 
     @property
-    def recall_wealth_threshold(self) -> float:
+    def wealth_threshold_R(self) -> float:
         return 1.0 / self.delta_R
 
     @property
-    def precision_wealth_threshold(self) -> float:
+    def wealth_threshold_P(self) -> float:
         return len(self.thresholds) / self.delta_P
 
     def add_samples(
@@ -242,25 +211,25 @@ class CascadeConfSeqs(ABC):
 
     def is_recall_satisfied(self, k: int) -> bool:
         """Conservative: rejects null hypothesis: mu <= 0 at level delta_R."""
-        wealth = self._get_recall_mart(k, reverse=False).wealth()
-        return wealth > self.recall_wealth_threshold
+        wealth = self._get_mart_R(k, reverse=False).wealth()
+        return wealth > self.wealth_threshold_R
 
     def is_recall_plausible(self, k: int) -> bool:
         """Optimistic: fails to reject null hypothesis: mu >= 0 at level delta_R."""
-        wealth = self._get_recall_mart(k, reverse=True).wealth()
-        return wealth <= self.recall_wealth_threshold
+        wealth = self._get_mart_R(k, reverse=True).wealth()
+        return wealth <= self.wealth_threshold_R
 
     def is_precision_satisfied(self, k_upper: int, k_lower: int) -> bool:
         """Conservative: rejects null hypothesis: mu <= 0 at level
         delta_P / len(thresholds)."""
-        wealth = self._get_precision_mart(k_upper, k_lower, reverse=False).wealth()
-        return wealth > self.precision_wealth_threshold
+        wealth = self._get_mart_P(k_upper, k_lower, reverse=False).wealth()
+        return wealth > self.wealth_threshold_P
 
     def is_precision_plausible(self, k_upper: int, k_lower: int) -> bool:
         """Optimistic: fails to reject null hypothesis: mu >= 0 at level
         delta_P / len(thresholds)."""
-        wealth = self._get_precision_mart(k_upper, k_lower, reverse=True).wealth()
-        return wealth <= self.precision_wealth_threshold
+        wealth = self._get_mart_P(k_upper, k_lower, reverse=True).wealth()
+        return wealth <= self.wealth_threshold_P
 
     def _get_unprocessed_samples(
         self, start_idx: int
@@ -272,25 +241,25 @@ class CascadeConfSeqs(ABC):
             self.weights[start_idx:] if self.weights is not None else None,
         )
 
-    def _get_recall_mart(
+    def _get_mart_R(
         self,
         k: int,
         reverse: bool = False
     ) -> TestSupermartingale:
         """Returns an up-to-date recall test supermartingale for threshold index k."""
         key = (k, reverse)
-        if key not in self._recall_marts:
-            self._recall_marts[key] = self._create_recall_mart(k, reverse=reverse)
-        mart = self._recall_marts[key]
+        if key not in self._marts_R:
+            self._marts_R[key] = self._create_mart_R(k, reverse=reverse)
+        mart = self._marts_R[key]
 
         if mart.t < len(self.scores):
             scores, labels, weights = self._get_unprocessed_samples(mart.t)
-            rvs = self._get_recall_rvs(k, scores, labels, weights)
+            rvs = self._get_rvs_R(k, scores, labels, weights)
             mart.update(rvs)
 
         return mart
 
-    def _get_precision_mart(
+    def _get_mart_P(
         self,
         k_upper: int,
         k_lower: int,
@@ -300,16 +269,16 @@ class CascadeConfSeqs(ABC):
         (k_upper, k_lower)."""
         if not reverse:
             if k_lower != self._last_k_lower:
-                self._precision_marts.clear()
+                self._marts_P.clear()
                 self._last_k_lower = k_lower
-            cache = self._precision_marts
+            cache = self._marts_P
         else:
             if k_lower != self._last_k_lower_opt:
-                self._precision_opt_marts.clear()
+                self._opt_marts_P.clear()
                 self._last_k_lower_opt = k_lower
-            cache = self._precision_opt_marts
+            cache = self._opt_marts_P
         if k_upper not in cache:
-            cache[k_upper] = self._create_precision_mart(
+            cache[k_upper] = self._create_mart_P(
                 k_upper,
                 k_lower,
                 reverse=reverse
@@ -318,13 +287,13 @@ class CascadeConfSeqs(ABC):
 
         if mart.t < len(self.scores):
             scores, labels, weights = self._get_unprocessed_samples(mart.t)
-            rvs = self._get_precision_rvs(k_upper, k_lower, scores, labels, weights)
+            rvs = self._get_rvs_P(k_upper, k_lower, scores, labels, weights)
             mart.update(rvs)
 
         return mart
 
     @abstractmethod
-    def _get_recall_rvs(
+    def _get_rvs_R(
         self,
         k: int,
         scores: NDArray[np.float64],
@@ -334,7 +303,7 @@ class CascadeConfSeqs(ABC):
         pass
 
     @abstractmethod
-    def _create_recall_mart(
+    def _create_mart_R(
         self,
         k: int,
         reverse: bool = False
@@ -342,7 +311,7 @@ class CascadeConfSeqs(ABC):
         pass
 
     @abstractmethod
-    def _get_precision_rvs(
+    def _get_rvs_P(
         self,
         k_upper: int,
         k_lower: int,
@@ -353,7 +322,7 @@ class CascadeConfSeqs(ABC):
         pass
 
     @abstractmethod
-    def _create_precision_mart(
+    def _create_mart_P(
         self,
         k_upper: int,
         k_lower: int,
@@ -361,23 +330,30 @@ class CascadeConfSeqs(ABC):
     ) -> TestSupermartingale:
         pass
 
-    def check_asymptotic_validity(
+    def asymptotic_diag_R(
+        self,
+        k_lower: int,
+    ) -> AsymptoticValidityDiagnostics | None:
+        """Checks asymptotic validity of the recall confidence sequences for the
+        selected threshold.
+
+        Default implementation for non-asymptotic confidence sequences returns
+        None.
+        """
+        return None
+
+    def asymptotic_diag_P(
         self,
         k_upper: int,
         k_lower: int,
-        num_samples: int,
-        min_positives: int,
-        min_true_positives: int
-    ) -> tuple[bool | None, AsymptoticValidityDiagnostics | None]:
-        """Checks asymptotic validity of the confidence sequences for the selected
-        thresholds.
+    ) -> AsymptoticValidityDiagnostics | None:
+        """Checks asymptotic validity of the precision confidence sequence for the
+        selected thresholds.
 
         Default implementation for non-asymptotic confidence sequences returns
-        (True, None). Subclasses implementing asymptotic sequences should override this
-        method to inspect their empirical variance accumulators, prior variance
-        parameters, and degrees of freedom.
+        None.
         """
-        return True, None
+        return None
 
 
 class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
@@ -475,7 +451,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         else:
             self.max_weight_ge_upper = self.max_weight_ge
 
-    def _get_recall_shift_width(
+    def _get_shift_width_R(
         self,
         k: int
     ) -> tuple[float, float]:
@@ -496,7 +472,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
         return shift_R, width_R
 
-    def _get_precision_shift_width(
+    def _get_shift_width_P(
         self,
         k_upper: int,
         k_lower: int
@@ -515,12 +491,12 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
         return shift_P, width_P
 
-    def _create_recall_mart(
+    def _create_mart_R(
         self,
         k: int,
         reverse: bool = False
     ) -> TestSupermartingale:
-        shift_R, width_R = self._get_recall_shift_width(k)
+        shift_R, width_R = self._get_shift_width_R(k)
         target_mean = (shift_R / width_R) if width_R > 0 else 0.0
         return BettingSupermartingale(
             m=target_mean,
@@ -530,7 +506,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
             reverse=reverse,
         )
 
-    def _get_recall_rvs(
+    def _get_rvs_R(
         self,
         k: int,
         scores: NDArray[np.float64],
@@ -542,18 +518,18 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         unscaled_rvs = labels * (is_above_tau - self.gamma_R)
         if weights is not None:
             unscaled_rvs *= weights
-        shift_R, width_R = self._get_recall_shift_width(k)
+        shift_R, width_R = self._get_shift_width_R(k)
         if width_R > 0:
             return (unscaled_rvs + shift_R) / width_R
         return np.zeros_like(unscaled_rvs)
 
-    def _create_precision_mart(
+    def _create_mart_P(
         self,
         k_upper: int,
         k_lower: int,
         reverse: bool = False,
     ) -> TestSupermartingale:
-        shift_P, width_P = self._get_precision_shift_width(k_upper, k_lower)
+        shift_P, width_P = self._get_shift_width_P(k_upper, k_lower)
         target_mean = (shift_P / width_P) if width_P > 0 else 0.0
         return BettingSupermartingale(
             m=target_mean,
@@ -563,7 +539,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
             reverse=reverse,
         )
 
-    def _get_precision_rvs(
+    def _get_rvs_P(
         self,
         k_upper: int,
         k_lower: int,
@@ -580,7 +556,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         )
         if weights is not None:
             unscaled_rvs *= weights
-        shift_P, width_P = self._get_precision_shift_width(k_upper, k_lower)
+        shift_P, width_P = self._get_shift_width_P(k_upper, k_lower)
         if width_P > 0:
             return (unscaled_rvs + shift_P) / width_P
         return np.zeros_like(unscaled_rvs)
@@ -588,75 +564,106 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
 
 @dataclass
 class PriorAndTargetVar:
-    """Tuple of (v_0_recall, v_0_precision) that also holds expected process target
-    variances (v_0_target_recall, v_0_target_precision)."""
+    """Tuple of (v_0_R, v_0_P) that also holds expected process target
+    variances (v_0_target_R, v_0_target_P)."""
 
     def __init__(
         self,
-        prior_recall: float | NDArray[np.float64],
-        prior_precision: float | NDArray[np.float64] | None = None,
-        target_recall: float | NDArray[np.float64] | None = None,
-        target_precision: float | NDArray[np.float64] | None = None
+        prior_R: float | NDArray[np.float64],
+        prior_P: float | NDArray[np.float64] | None = None,
+        target_R: float | NDArray[np.float64] | None = None,
+        target_P: float | NDArray[np.float64] | None = None,
+        null_failure_prob_R: float | NDArray[np.float64] | None = None,
+        null_failure_prob_P: float | NDArray[np.float64] | None = None,
     ) -> None:
-        self._prior_recall = np.asarray(prior_recall, dtype=np.float64)
-        if np.any(self._prior_recall <= 0.0):
-            raise ValueError("All entries of prior_recall must be positive.")
+        self._prior_R = np.asarray(prior_R, dtype=np.float64)
+        if np.any(self._prior_R <= 0.0):
+            raise ValueError("All entries of prior_R must be positive.")
 
-        if prior_precision is not None:
-            self._prior_precision = np.asarray(prior_precision, dtype=np.float64)
-            if np.any(self._prior_precision <= 0.0):
-                raise ValueError("All entries of prior_precision must be positive.")
+        if prior_P is not None:
+            self._prior_P = np.asarray(prior_P, dtype=np.float64)
+            if np.any(self._prior_P <= 0.0):
+                raise ValueError("All entries of prior_P must be positive.")
         else:
-            self._prior_precision = self._prior_recall
+            self._prior_P = self._prior_R
 
-        if target_recall is not None:
-            self._target_recall = np.asarray(target_recall, dtype=np.float64)
-            if np.any(self._target_recall < 0.0):
-                raise ValueError("All entries of target_recall must be non-negative.")
-            if np.shape(self._target_recall) != np.shape(self._prior_recall):
+        if target_R is not None:
+            self._target_R = np.asarray(target_R, dtype=np.float64)
+            if np.any(self._target_R < 0.0):
+                raise ValueError("All entries of target_R must be non-negative.")
+            if np.shape(self._target_R) != np.shape(self._prior_R):
                 raise ValueError(
-                    "target_recall must have the same shape as prior_recall."
+                    "target_R must have the same shape as prior_R."
                 )
         else:
-            self._target_recall = self._prior_recall
+            self._target_R = self._prior_R
 
-        if target_precision is not None:
-            self._target_precision = np.asarray(target_precision, dtype=np.float64)
-            if np.any(self._target_precision < 0.0):
-                raise ValueError("All entries of target_precision must be non-negative.")
-            if np.shape(self._target_precision) != np.shape(self._prior_precision):
+        if target_P is not None:
+            self._target_P = np.asarray(target_P, dtype=np.float64)
+            if np.any(self._target_P < 0.0):
                 raise ValueError(
-                    "target_precision must have the same shape as prior_precision."
+                    "All entries of target_P must be non-negative."
+                )
+            if np.shape(self._target_P) != np.shape(self._prior_P):
+                raise ValueError(
+                    "target_P must have the same shape as prior_P."
                 )
         else:
-            self._target_precision = self._prior_precision
+            self._target_P = self._prior_P
 
-    def prior_recall(self, k: int) -> float:
-        if self._prior_recall.shape == ():
-            return float(self._prior_recall)
-        return float(self._prior_recall[k])
+        self._null_failure_prob_R = (
+            np.asarray(null_failure_prob_R, dtype=np.float64)
+            if null_failure_prob_R is not None
+            else None
+        )
+        self._null_failure_prob_P = (
+            np.asarray(null_failure_prob_P, dtype=np.float64)
+            if null_failure_prob_P is not None
+            else None
+        )
 
-    def prior_precision(self, k_upper: int, k_lower: int) -> float:
-        if self._prior_precision.shape == ():
-            return float(self._prior_precision)
-        return float(self._prior_precision[k_upper, k_lower])
+    def prior_R(self, k: int) -> float:
+        if self._prior_R.shape == ():
+            return float(self._prior_R)
+        return float(self._prior_R[k])
 
-    def target_recall(self, k: int) -> float:
-        if self._target_recall.shape == ():
-            return float(self._target_recall)
-        return float(self._target_recall[k])
+    def prior_P(self, k_upper: int, k_lower: int) -> float:
+        if self._prior_P.shape == ():
+            return float(self._prior_P)
+        return float(self._prior_P[k_upper, k_lower])
 
-    def target_precision(self, k_upper: int, k_lower: int) -> float:
-        if self._target_precision.shape == ():
-            return float(self._target_precision)
-        return float(self._target_precision[k_upper, k_lower])
+    def target_R(self, k: int) -> float:
+        if self._target_R.shape == ():
+            return float(self._target_R)
+        return float(self._target_R[k])
+
+    def target_P(self, k_upper: int, k_lower: int) -> float:
+        if self._target_P.shape == ():
+            return float(self._target_P)
+        return float(self._target_P[k_upper, k_lower])
+
+    def null_failure_prob_R(self, k: int) -> float | None:
+        if self._null_failure_prob_R is None:
+            return None
+        if self._null_failure_prob_R.shape == ():
+            return float(self._null_failure_prob_R)
+        return float(self._null_failure_prob_R[k])
+
+    def null_failure_prob_P(self, k_upper: int, k_lower: int = 0) -> float | None:
+        if self._null_failure_prob_P is None:
+            return None
+        if self._null_failure_prob_P.shape == ():
+            return float(self._null_failure_prob_P)
+        if self._null_failure_prob_P.ndim == 1:
+            return float(self._null_failure_prob_P[k_upper])
+        return float(self._null_failure_prob_P[k_upper, k_lower])
 
 
 def compute_prior_and_target_var(
     scores: ArrayLike,
     gamma_R: float,
     gamma_P: float,
-    delta: float = 0.05,
+    delta: float,
     thresholds: Sequence[float] | NDArray[np.float64] | None = None,
     thresholds_upper: Sequence[float] | NDArray[np.float64] | None = None,
     weights: ArrayLike | None = None,
@@ -670,14 +677,14 @@ def compute_prior_and_target_var(
         scores: Proxy scores in $[0, 1]$ across the population dataset.
         gamma_R: Target recall constraint in $(0, 1)$.
         gamma_P: Target precision constraint in $(0, 1)$.
-        delta: Total allowed family-wise error rate in $(0, 1)$ (default: 0.05).
+        delta: Total allowed family-wise error rate in $(0, 1)$.
         thresholds: Candidate grid of thresholds in $[0, 1]$. If `thresholds_upper` is
             None, this function assumes the same grid is used for tuning the upper and
             lower thresholds. Otherwise, this function assumes the grid is used for the
             lower threshold and `thresholds_upper` is used for the upper threshold. If
             provided, returns a `PriorAndTargetVar` containing tailored prior variance
-            arrays `(v_0_recall, v_0_precision)` and target variances
-            `(v_0_target_recall, v_0_target_precision)`.
+            arrays `(v_0_R, v_0_P)` and target variances
+            `(v_0_target_R, v_0_target_P)`.
         thresholds_upper: Optional candidate grid for tuning the upper threshold.
             Defaults to `thresholds`.
         weights: Optional importance weights $w(x) = 1 / (N \cdot q(x))$.
@@ -698,7 +705,7 @@ def compute_prior_and_target_var(
         weights = np.ones(N, dtype=np.float64)
 
     if n_0 == "auto":
-        eff_n_0 = min(1000.0, max(50.0, 0.10 * N))
+        eff_n_0 = min(1000.0, max(50.0, 0.1 * N))
     else:
         eff_n_0 = float(n_0)
 
@@ -711,12 +718,17 @@ def compute_prior_and_target_var(
 
     # Fallback when no threshold grid is specified
     if thresholds is None:
-        b = max(1.0 - gamma_R, gamma_R, 1.0 - gamma_P, gamma_P) * max_weight
+        b = max(1.0 - gamma_R, 1.0 - gamma_P) * max_weight
         v_0_floor = (2.0 * b**2) / log_delta_R_inv
         weighted_pos_mass = float(np.mean(scores * weights))
         sigma2 = max(weighted_pos_mass, 1.0 / N) * gamma_R * (1.0 - gamma_R)
         v_0_target = eff_n_0 * sigma2
-        return PriorAndTargetVar(max(v_0_floor, v_0_target), target_recall=v_0_target)
+        return PriorAndTargetVar(
+            max(v_0_floor, v_0_target),
+            target_R=v_0_target,
+            null_failure_prob_R=1.0 - gamma_R,
+            null_failure_prob_P=1.0 - gamma_P,
+        )
 
     thresholds = np.asarray(thresholds, dtype=np.float64)
     M_lower = len(thresholds)
@@ -735,7 +747,10 @@ def compute_prior_and_target_var(
     scores_sorted = scores[order]
     weights_sorted = weights[order]
 
-    # Precompute weighted label probabilities using proxy scores as surrogates
+    # Proposal probability per sorted item: w_i = 1 / (N * q_i) => q_i = 1 / (N * w_i)
+    q_sorted = 1.0 / (N * weights_sorted)
+
+    # Precompute weighted label probabilities and proposal distributions
     weighted_pos_prob = scores_sorted * weights_sorted
     weighted_neg_prob = (1.0 - scores_sorted) * weights_sorted
 
@@ -754,62 +769,121 @@ def compute_prior_and_target_var(
         0.0
     )
 
-    # Prefix accumulations for items with s_i < tau:
-    prefix_max_weight = np.maximum.accumulate(weights_sorted)
-    prefix_max_weight_with_zero = np.insert(prefix_max_weight, 0, 0.0)
-
-    # Total expected positive mass in the population
+    # Total expected positive and proposal masses across population
     total_pos_mass = suffix_sum_pos_prob[0] / N
 
     # -------------------------------------------------------------------------
-    # 1. Recall prior variance per candidate lower threshold
+    # 1. Recall prior variance and proposal-adjusted binomial null probability
     # -------------------------------------------------------------------------
     idx_lower = np.searchsorted(scores_sorted, thresholds, side="left")
     w_max_lower = suffix_max_weight[idx_lower]
-    w_max_lt_lower = prefix_max_weight_with_zero[idx_lower]
 
     # Positive probability mass above and below each candidate lower threshold
     pos_mass_ge_lower = suffix_sum_pos_prob[idx_lower] / N
     pos_mass_lt_lower = np.maximum(0.0, total_pos_mass - pos_mass_ge_lower)
 
-    # Safety floor for recall (incorporates both positive and negative jumps)
-    b_R = np.maximum((1.0 - gamma_R) * w_max_lower, gamma_R * w_max_lt_lower)
-    v_0_floor_recall = (2.0 * b_R**2) / log_delta_R_inv
+    # Safety floor for recall (incorporates positive jumps only)
+    b_R = (1.0 - gamma_R) * w_max_lower
+    v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
 
     # Estimated second moment of the recall margin increment
-    sigma2_recall = (
+    sigma2_R = (
         (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R ** 2) * pos_mass_lt_lower
     )
-    v_0_target_recall = eff_n_0 * sigma2_recall
-    v_0_recall = np.maximum(v_0_floor_recall, v_0_target_recall)
+    v_0_target_R = eff_n_0 * sigma2_R
+    v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
+
+    # Proposal-adjusted null failure probability for recall via partition density:
+    # Dropped partition D(tau_l) = {i : s_i < tau_l} has item count N_lt and proposal
+    # mass Q_lt.
+    # Retained partition R(tau_l) = {i : s_i >= tau_l} has item count N_ge and proposal
+    # mass Q_ge.
+    # eta_R(tau_l) = min(1.0, bar{q}_{< tau_l} / bar{q}_{>= tau_l})
+    cum_q = np.cumsum(q_sorted)
+    total_q = cum_q[-1]
+
+    N_lt_lower = idx_lower.astype(np.float64)
+    N_ge_lower = (N - idx_lower).astype(np.float64)
+
+    Q_lt_lower = np.zeros_like(N_lt_lower)
+    valid_lt_lower = idx_lower > 0
+    Q_lt_lower[valid_lt_lower] = cum_q[idx_lower[valid_lt_lower] - 1]
+    Q_ge_lower = np.maximum(0.0, total_q - Q_lt_lower)
+
+    q_bar_lt_lower = np.where(
+        N_lt_lower > 0,
+        Q_lt_lower / np.maximum(N_lt_lower, 1.0),
+        1.0 / N,
+    )
+    q_bar_ge_lower = np.where(
+        N_ge_lower > 0,
+        Q_ge_lower / np.maximum(N_ge_lower, 1.0),
+        1.0 / N,
+    )
+
+    eta_R = np.clip(
+        q_bar_lt_lower / np.maximum(q_bar_ge_lower, 1e-12),
+        0.0,
+        1.0,
+    )
+    null_failure_prob_R = (
+        (1.0 - gamma_R) * eta_R / (gamma_R + (1.0 - gamma_R) * eta_R)
+    )
+    null_failure_prob_R = np.clip(null_failure_prob_R, 0.0, 1.0 - gamma_R)
 
     # -------------------------------------------------------------------------
-    # 2. Precision prior variance per (upper, lower) threshold pair
+    # 2. Precision prior variance and proposal-adjusted binomial null probability
     # -------------------------------------------------------------------------
-    # Negative probability mass above each candidate upper threshold
     idx_upper = np.searchsorted(scores_sorted, thresholds_upper, side="left")
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
     neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper
     pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
 
-    w_max_upper = suffix_max_weight[idx_upper]
-    b_P = np.maximum(
-        (1.0 - gamma_P) * w_max_lower[np.newaxis, :],
-        gamma_P * w_max_upper[:, np.newaxis]
-    )
-    v_0_floor_precision = (2.0 * b_P**2) / log_delta_P_inv
+    # Safety floor for precision (incorporates positive jumps only)
+    b_P = (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
+    v_0_floor_P = (2.0 * b_P**2) / log_delta_P_inv
 
     # 2D second moment matrix: sum of false-positive variance (from upper threshold)
     # and true-positive variance (from lower threshold) via NumPy broadcasting
     total_var = neg_var_upper[:, np.newaxis] + pos_var_lower[np.newaxis, :]
-    v_0_target_precision = eff_n_0 * total_var
-    v_0_precision = np.maximum(v_0_floor_precision, v_0_target_precision)
+    v_0_target_P = eff_n_0 * total_var
+    v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
+
+    # Proposal-adjusted null failure probability for precision via partition density:
+    # Candidate upper partition U(tau_u) = {i : s_i >= tau_u} has item count N_ge_upper
+    # and mass Q_ge_upper.
+    # Retained lower partition R(tau_l) = {i : s_i >= tau_l} has item count N_ge_lower
+    # and mass Q_ge_lower.
+    # eta_P(tau_u, tau_l) = min(1.0, bar{q}_{>= tau_u} / bar{q}_{>= tau_l})
+    N_ge_upper = (N - idx_upper).astype(np.float64)
+    Q_lt_upper = np.zeros_like(N_ge_upper)
+    valid_lt_upper = idx_upper > 0
+    Q_lt_upper[valid_lt_upper] = cum_q[idx_upper[valid_lt_upper] - 1]
+    Q_ge_upper = np.maximum(0.0, total_q - Q_lt_upper)
+
+    q_bar_ge_upper = np.where(
+        N_ge_upper > 0,
+        Q_ge_upper / np.maximum(N_ge_upper, 1.0),
+        1.0 / N,
+    )
+
+    # 2D broadcast matrix of shape (M_upper, M_lower):
+    ratio_P = q_bar_ge_upper[:, np.newaxis] / np.maximum(
+        q_bar_ge_lower[np.newaxis, :], 1e-12
+    )
+    eta_P = np.clip(ratio_P, 0.0, 1.0)
+    null_failure_prob_P = (
+        (1.0 - gamma_P) * eta_P / (gamma_P + (1.0 - gamma_P) * eta_P)
+    )
+    null_failure_prob_P = np.clip(null_failure_prob_P, 0.0, 1.0 - gamma_P)
 
     return PriorAndTargetVar(
-        prior_recall=v_0_recall,
-        prior_precision=v_0_precision,
-        target_recall=v_0_target_recall,
-        target_precision=v_0_target_precision,
+        prior_R=v_0_R,
+        prior_P=v_0_P,
+        target_R=v_0_target_R,
+        target_P=v_0_target_P,
+        null_failure_prob_R=null_failure_prob_R,
+        null_failure_prob_P=null_failure_prob_P,
     )
 
 
@@ -826,6 +900,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         thresholds_upper: NDArray[np.float64],
         v_0: float | PriorAndTargetVar = 0.01,
         max_jump_ratio_bound: float = 0.50,
+        variance_ratio_bound: float = 0.05,
+        conservative_correction: bool = False
     ) -> None:
         r"""
         Args:
@@ -845,23 +921,29 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             max_jump_ratio_bound: Maximum allowable Hall & Heyde Lindeberg
                 jump-to-variance ratio $\rho_{\max} = \max_i (X_i - \bar{X})^2 / V_t$.
                 Defaults to 0.50.
+            variance_ratio_bound: Maximum allowable ratio of cumulative process
+                variance to prior variance $V_t / v_0$. Defaults to 0.05.
+            conservative_correction: If True, applies a conservative correction to the
+                binomial null failure probability for the precision supermartingale.
         """
         super().__init__(gamma_P, gamma_R, delta, thresholds, thresholds_upper)
         if isinstance(v_0, PriorAndTargetVar):
             self.v_0 = v_0
         else:
-            self.v_0 = PriorAndTargetVar(prior_recall=v_0)
+            self.v_0 = PriorAndTargetVar(prior_R=v_0)
         self.max_jump_ratio_bound = max_jump_ratio_bound
+        self.variance_ratio_bound = variance_ratio_bound
+        self.conservative_correction = conservative_correction
 
-    def _create_recall_mart(
+    def _create_mart_R(
         self,
         k: int,
         reverse: bool = False
     ) -> TestSupermartingale:
-        v_0 = float(self.v_0.prior_recall(k))
+        v_0 = float(self.v_0.prior_R(k))
         return GaussianMixtureSupermartingale(m=0.0, v_0=v_0, reverse=reverse)
 
-    def _get_recall_rvs(
+    def _get_rvs_R(
         self,
         k: int,
         scores: NDArray[np.float64],
@@ -875,16 +957,16 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             rvs *= weights
         return rvs
 
-    def _create_precision_mart(
+    def _create_mart_P(
         self,
         k_upper: int,
         k_lower: int,
         reverse: bool = False,
     ) -> TestSupermartingale:
-        v_0 = float(self.v_0.prior_precision(k_upper, k_lower))
+        v_0 = float(self.v_0.prior_P(k_upper, k_lower))
         return GaussianMixtureSupermartingale(m=0.0, v_0=v_0, reverse=reverse)
 
-    def _get_precision_rvs(
+    def _get_rvs_P(
         self,
         k_upper: int,
         k_lower: int,
@@ -903,61 +985,93 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             rvs *= weights
         return rvs
 
-    def check_asymptotic_validity(
+    def asymptotic_diag_R(
+        self,
+        k_lower: int,
+    ) -> AsymptoticValidityDiagnostics | None:
+        if k_lower == 0:
+            return None
+
+        tau_lower = self.thresholds[k_lower]
+        num_true_positives = np.sum(self.labels & (self.scores >= tau_lower))
+        num_false_negatives = np.sum(self.labels & (self.scores < tau_lower))
+
+        mart = self._get_mart_R(k_lower, reverse=False)
+        assert isinstance(mart, GaussianMixtureSupermartingale)
+
+        null_failure_prob = self.v_0.null_failure_prob_R(k_lower)
+        if null_failure_prob is None:
+            null_failure_prob = 1.0 - self.gamma_R
+
+        rvs = self._get_rvs_R(
+            k_lower, self.scores, self.labels, self.weights
+        )
+        if mart.v_t > 0.0 and len(rvs) > 0:
+            mean = np.mean(rvs)
+            rho_max = np.max((rvs - mean) ** 2) / mart.v_t
+        else:
+            rho_max = 0.0
+
+        return AsymptoticValidityDiagnostics(
+            v_t=mart.v_t,
+            v_0=self.v_0.target_R(k_lower),
+            rho_max=float(rho_max),
+            num_true_positives=int(num_true_positives),
+            num_false_negatives_or_positives=int(num_false_negatives),
+            null_failure_prob=null_failure_prob,
+            metric="Recall",
+            thresholds=(tau_lower,),
+            variance_ratio_bound=self.variance_ratio_bound,
+            max_jump_ratio_bound=self.max_jump_ratio_bound,
+            delta=self.delta_R,
+        )
+
+    def asymptotic_diag_P(
         self,
         k_upper: int,
         k_lower: int,
-        num_samples: int,
-        min_positives: int = 30,
-        min_true_positives: int = 5
-    ) -> tuple[bool, AsymptoticValidityDiagnostics]:
-        mart_R = self._get_recall_mart(k_lower, reverse=False)
-        mart_P = self._get_precision_mart(k_upper, k_lower, reverse=False)
+    ) -> AsymptoticValidityDiagnostics | None:
+        if k_upper == len(self.thresholds_upper) - 1:
+            return None
 
-        assert isinstance(mart_R, GaussianMixtureSupermartingale)
-        assert isinstance(mart_P, GaussianMixtureSupermartingale)
+        tau_lower = self.thresholds[k_lower]
+        tau_upper = self.thresholds_upper[k_upper]
+        num_false_positives = np.sum((~self.labels) & (self.scores >= tau_upper))
+        num_true_positives = np.sum(self.labels & (self.scores >= tau_lower))
 
-        tau_lower = float(self.thresholds[k_lower])
+        mart = self._get_mart_P(k_upper, k_lower, reverse=False)
+        assert isinstance(mart, GaussianMixtureSupermartingale)
 
-        v_0_target_recall = float(self.v_0.target_recall(k_lower))
-        v_0_target_precision = float(self.v_0.target_precision(k_upper, k_lower))
+        v_0_target = self.v_0.target_P(k_upper, k_lower)
+        null_failure_prob = self.v_0.null_failure_prob_P(k_upper, k_lower)
+        if null_failure_prob is None:
+            null_failure_prob = 1.0 - self.gamma_P
 
-        rvs_R = self._get_recall_rvs(
-            k_lower, self.scores, self.labels, self.weights
-        )
-        if mart_R.v_t > 0.0 and len(rvs_R) > 0:
-            mean_R = float(np.mean(rvs_R))
-            rho_max_recall = float(np.max((rvs_R - mean_R) ** 2) / mart_R.v_t)
-        else:
-            rho_max_recall = 0.0
-
-        rvs_P = self._get_precision_rvs(
+        rvs = self._get_rvs_P(
             k_upper, k_lower, self.scores, self.labels, self.weights
         )
-        if mart_P.v_t > 0.0 and len(rvs_P) > 0:
-            mean_P = float(np.mean(rvs_P))
-            rho_max_precision = float(np.max((rvs_P - mean_P) ** 2) / mart_P.v_t)
+        if mart.v_t > 0.0 and len(rvs) > 0:
+            mean = np.mean(rvs)
+            rho_max = np.max((rvs - mean) ** 2) / mart.v_t
         else:
-            rho_max_precision = 0.0
+            rho_max = 0.0
 
-        diagnostics = AsymptoticValidityDiagnostics(
-            v_t_recall=float(mart_R.v_t),
-            v_t_precision=float(mart_P.v_t),
-            v_0_target_recall=v_0_target_recall,
-            v_0_target_precision=v_0_target_precision,
-            rho_max_recall=rho_max_recall,
-            rho_max_precision=rho_max_precision,
-            num_samples=num_samples,
-            num_positives=int(np.sum(self.labels)),
-            num_true_positives=int(np.sum(self.labels & (self.scores >= tau_lower))),
-            is_tau_neg_anchor=(k_lower == 0),
-            is_tau_pos_anchor=(k_upper == len(self.thresholds_upper) - 1),
-            min_positives=min_positives,
-            min_true_positives=min_true_positives,
+        delta = self.delta_P
+        if self.conservative_correction:
+            delta = delta / len(self.thresholds)
+        return AsymptoticValidityDiagnostics(
+            v_t=mart.v_t,
+            v_0=v_0_target,
+            rho_max=float(rho_max),
+            num_true_positives=int(num_true_positives),
+            num_false_negatives_or_positives=int(num_false_positives),
+            null_failure_prob=null_failure_prob,
+            metric="Precision",
+            thresholds=(tau_lower, tau_upper),
+            variance_ratio_bound=self.variance_ratio_bound,
             max_jump_ratio_bound=self.max_jump_ratio_bound,
+            delta=delta
         )
-
-        return diagnostics.is_valid(), diagnostics
 
 
 class ACTIS:
@@ -976,11 +1090,14 @@ class ACTIS:
         conf_seq: Literal["finite", "asymptotic"] = "finite",
         v_0: float | PriorAndTargetVar = 0.01,
         min_positives: int | Literal["auto"] = "auto",
-        min_true_positives: int = 5,
         p_floor: float | Literal["auto"] = "auto",
         max_weight_ge: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_lt: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None,
+        enable_asymptotic_protection: bool = True,
+        conservative_correction: bool = False,
+        variance_ratio_bound: float = 0.05,
+        max_jump_ratio_bound: float = 0.50,
     ):
         r"""
         Args:
@@ -1012,8 +1129,6 @@ class ACTIS:
                 asymptotic confidence sequence to be considered valid and for early
                 stopping warmup. If "auto" (default), dynamically calibrated based on
                 delta, pop_size, and proxy scores.
-            min_true_positives: Minimum number of observed true positives required for
-                non-anchor threshold certification. Defaults to 5.
             p_floor: Assumed or estimated lower-bound positive prevalence for population
                 scaling of `min_positives`. If "auto" (default), dynamically estimated
                 from population proxy scores (discounted by 0.5 with floor 1e-4 and cap
@@ -1041,6 +1156,22 @@ class ACTIS:
                 `max_weight_ge` where `thresholds` is replaced by `thresholds_upper`.
                 This argument is not required for `conf_seq='asymptotic'` or if
                 sampling is done uniformly with/without replacement.
+            enable_asymptotic_protection: If `conf_seq='asymptotic'` and True, enables
+                heuristic protection for anytime-valid FWER control when operating in
+                the non-asymptotic regime. This arugment has no effect when
+                `conf_seq='finite'`.
+            conservative_correction: If `conf_seq='asymptotic'` and True, applies a
+                conservative correction to the binomial null failure probability for the
+                precision supermartingale. This argument has no effect when
+                `conf_seq='finite'` or when `enable_asymptotic_protection` is False.
+            variance_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies
+                the maximum allowable ratio of cumulative process variance to prior
+                variance $V_t / v_0$. Defaults to 0.05. This argument has no effect when
+                `conf_seq='finite'` or when `enable_asymptotic_protection` is False.
+            max_jump_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies
+                the maximum allowable jump-to-variance ratio. Defaults to 0.50. This
+                argument has no effect when `conf_seq='finite'` or when
+                `enable_asymptotic_protection` is False.
         """
         if pop_size is not None and (pop_size <= 0 or pop_size != int(pop_size)):
             raise ValueError("Parameter `pop_size` must be a positive integer.")
@@ -1051,7 +1182,6 @@ class ACTIS:
         self.delta = delta
         self.conf_seq = conf_seq
         self.min_positives = min_positives
-        self.min_true_positives = min_true_positives
         if p_floor != "auto" and (p_floor <= 0.0 or p_floor >= 1.0):
             raise ValueError("Parameter `p_floor` must be in (0, 1) or 'auto'.")
         self.p_floor: float | Literal["auto"] = p_floor
@@ -1069,7 +1199,10 @@ class ACTIS:
                 delta=delta,
                 thresholds=self.thresholds,
                 thresholds_upper=self.thresholds_upper,
-                v_0=v_0
+                v_0=v_0,
+                max_jump_ratio_bound=max_jump_ratio_bound,
+                variance_ratio_bound=variance_ratio_bound,
+                conservative_correction=conservative_correction
             )
         elif self.conf_seq == "finite":
             self.conf_seqs = FiniteSampleCascadeConfSeqs(
@@ -1095,6 +1228,8 @@ class ACTIS:
             num_samples=0,
             predicted_oracle_rate=None,
         )
+
+        self.enable_asymptotic_protection = enable_asymptotic_protection
 
     def _resolve_min_positives(
         self,
@@ -1172,7 +1307,7 @@ class ACTIS:
         self.seen_indices.update(indices)
         self.conf_seqs.add_samples(scores, labels, weights=weights)
 
-        tau_upper, tau_lower, k_upper, k_lower = self._tune_thresholds()
+        tau_upper, tau_lower, diag_R, diag_P = self._tune_thresholds()
 
         predicted_oracle_rate = None
         if population_scores is not None:
@@ -1182,32 +1317,18 @@ class ACTIS:
                 tau_lower=tau_lower,
             )
 
-        min_positives = self._resolve_min_positives(
-            N=len(population_scores) if population_scores is not None else None,
-            scores=population_scores,
-        )
-        is_asymptotically_valid, asymptotic_diagnostics = (
-            self.conf_seqs.check_asymptotic_validity(
-                k_upper=k_upper,
-                k_lower=k_lower,
-                num_samples=len(self.seen_indices),
-                min_positives=min_positives,
-                min_true_positives=self.min_true_positives,
-            )
-        )
-
         self.current_thresholds = CascadeThresholds(
             tau_pos=tau_upper,
             tau_neg=tau_lower,
             num_samples=len(self.seen_indices),
             predicted_oracle_rate=predicted_oracle_rate,
-            is_asymptotically_valid=is_asymptotically_valid,
-            asymptotic_diagnostics=asymptotic_diagnostics,
+            asymptotic_diag_R=diag_R,
+            asymptotic_diag_P=diag_P
         )
 
         return self.current_thresholds
 
-    def _tune_thresholds(self) -> tuple[float, float, int, int]:
+    def _tune_thresholds(self) -> tuple[float, float, AsymptoticValidityDiagnostics | None, AsymptoticValidityDiagnostics | None]:
         r"""Evaluates the test supermartingales across candidate threshold grids to find
         the optimal pair of thresholds."""
         # Forward sequential scan stopping at first failure of recall target
@@ -1221,6 +1342,14 @@ class ACTIS:
             else:
                 # Stop at first failure
                 break
+
+        diag_R = self.conf_seqs.asymptotic_diag_R(k_lower)
+        if diag_R is not None and not diag_R.is_valid() and \
+            self.enable_asymptotic_protection:
+            # Safety fallback to the lowest threshold if the asymptotic validity check
+            # fails
+            k_lower = 0
+            tau_lower = float(self.thresholds[0])
 
         # Backward sequential scan stopping at first failure of precision target
         k_upper = len(self.thresholds_upper) - 1
@@ -1238,7 +1367,19 @@ class ACTIS:
                 # Stop at first failure
                 break
 
-        return tau_upper, tau_lower, k_upper, k_lower
+        diag_P = self.conf_seqs.asymptotic_diag_P(k_upper, k_lower)
+        if diag_P is not None and not diag_P.is_valid() and \
+            self.enable_asymptotic_protection:
+            # Safety fallback to the highest threshold if the asymptotic validity check
+            # fails
+            tau_upper = float(self.thresholds_upper[-1])
+
+        return (
+            tau_upper,
+            tau_lower,
+            diag_R,
+            diag_P
+        )
 
     def _compute_optimistic_thresholds(self) -> tuple[float, float]:
         r"""Computes the best-case (optimistic) candidate thresholds within the anytime
@@ -1297,9 +1438,9 @@ class ACTIS:
             The predicted oracle call rate as a float between 0 and 1.
         """
         if tau_upper is None:
-            tau_upper = self.current_thresholds.tau_pos
+            tau_upper = self.current_thresholds.tau_upper
         if tau_lower is None:
-            tau_lower = self.current_thresholds.tau_neg
+            tau_lower = self.current_thresholds.tau_lower
 
         if tau_lower > tau_upper:
             return 1.0
@@ -1350,12 +1491,14 @@ class ACTIS:
         )
 
         num_positives = int(np.sum(self.conf_seqs.labels))
-        if self.conf_seq == "asymptotic":
-            asymp_valid = (
-                self.current_thresholds.is_asymptotically_valid
-                if self.current_thresholds.is_asymptotically_valid is not None
-                else False
-            )
+        if self.conf_seq == "asymptotic" and self.enable_asymptotic_protection:
+            asymp_valid = False
+            if ((self.current_thresholds.asymptotic_diag_R is None or
+                self.current_thresholds.asymptotic_diag_R.is_valid()) and
+                (self.current_thresholds.asymptotic_diag_P is None or
+                self.current_thresholds.asymptotic_diag_P.is_valid())):
+                asymp_valid = True
+
             warmup_needed = (not asymp_valid) or (num_positives < min_positives)
         else:
             warmup_needed = num_positives < min_positives
