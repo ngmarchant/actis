@@ -1,3 +1,4 @@
+import re
 import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -84,7 +85,10 @@ class BaseScenario(ABC):
         oracle_sent = (proxy_scores >= tau_lower) & (proxy_scores < tau_upper)
         oracle_positives = oracle_sent & oracle_outputs
 
-        true_positives = np.sum(helper_accepted & oracle_outputs) + np.sum(oracle_positives)
+        true_positives = (
+            np.sum(helper_accepted & oracle_outputs)
+            + np.sum(oracle_positives)
+        )
         predicted_positives = np.sum(helper_accepted) + np.sum(oracle_positives)
 
         if predicted_positives > 0:
@@ -868,6 +872,10 @@ def _read_dataframe(path: Path) -> pd.DataFrame:
     Returns:
         A pandas DataFrame with the loaded dataset.
     """
+    if path.is_dir():
+        from datasets import load_from_disk
+        return load_from_disk(str(path)).to_pandas()
+
     suffix = path.suffix.lower()
     if suffix in [".csv", ".tsv", ".txt"]:
         sep = "\t" if suffix == ".tsv" else ","
@@ -916,7 +924,61 @@ class TabularDataset(BaseScenario):
         self.data_path = Path(data_path)
         self.score_col = score_col
         self.label_col = label_col
+        self._df: pd.DataFrame | None = None
         self._data: tuple[NDArray[np.float64], NDArray[np.bool_]] | None = None
+
+    def get_dataframe(self) -> pd.DataFrame:
+        """Loads and returns the cached underlying DataFrame."""
+        if self._df is None:
+            if not self.data_path.exists():
+                raise FileNotFoundError(
+                    f"Dataset not found at '{self.data_path}'."
+                )
+            self._df = _read_dataframe(self.data_path)
+        return self._df
+
+    def get_costs(
+        self,
+        cost_key: str = "monetary",
+        oracle_cost_col: str = "oracle_cost",
+        proxy_cost_col: str = "proxy_cost",
+        default_oracle_cost: float = 1.0,
+        default_proxy_cost: float = 0.0,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """
+        Extracts 1D arrays of (proxy_costs, oracle_costs) from the dataset.
+
+        Args:
+            cost_key: Metric key inside the cost dictionaries (e.g. 'monetary',
+                'input_tokens', 'latency_ms').
+            oracle_cost_col: Name of the oracle cost dictionary column.
+            proxy_cost_col: Name of the proxy cost dictionary column.
+            default_oracle_cost: Fallback cost if column or cost_key is missing.
+            default_proxy_cost: Fallback cost if column or cost_key is missing.
+
+        Returns:
+            A tuple (proxy_costs, oracle_costs) of float64 1D arrays.
+        """
+        df = self.get_dataframe()
+        n = len(df)
+
+        def _extract(col_name: str, default_val: float) -> NDArray[np.float64]:
+            if col_name not in df.columns:
+                return np.full(n, default_val, dtype=np.float64)
+            vals = []
+            for item in df[col_name]:
+                if isinstance(item, dict):
+                    v = item.get(cost_key, default_val)
+                elif isinstance(item, (int, float)):
+                    v = item
+                else:
+                    v = default_val
+                vals.append(float(v) if v is not None else default_val)
+            return np.array(vals, dtype=np.float64)
+
+        proxy_arr = _extract(proxy_cost_col, default_proxy_cost)
+        oracle_arr = _extract(oracle_cost_col, default_oracle_cost)
+        return proxy_arr, oracle_arr
 
     def _load_data(self) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
         """
@@ -926,12 +988,7 @@ class TabularDataset(BaseScenario):
             A tuple (proxy_scores, oracle_outputs).
         """
         if self._data is None:
-            path = self.data_path
-            if not path.exists():
-                raise FileNotFoundError(
-                    f"Dataset not found at '{self.data_path}'."
-                )
-            df = _read_dataframe(path)
+            df = self.get_dataframe()
             if self.score_col not in df.columns:
                 raise ValueError(
                     f"Score column '{self.score_col}' not found in dataset columns: "
@@ -1094,7 +1151,121 @@ class SUPGTACRED(TabularDataset):
 SUPGTacred = SUPGTACRED
 
 
-SCENARIOS = {
+class ScaleDocDataset(TabularDataset):
+    """
+    Scenario for ScaleDoc benchmark datasets (PubMed, BigPatent, GovReport).
+
+    Loads proxy scores and ground-truth oracle labels for a specific query
+    from a file on disk
+    (default: experiments/data/scaledoc/{dataset}/q{query_id}.parquet).
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        query_id: int = 0,
+        data_dir: str | Path = "experiments/data/scaledoc",
+        score_col: str = "proxy_score",
+        label_col: str = "label",
+        data_path: str | Path | None = None,
+    ):
+        clean_name = dataset_name.lower().replace("-", "_")
+        if data_path is None:
+            resolved_path = Path(data_dir) / clean_name / f"q{query_id}.parquet"
+        else:
+            resolved_path = Path(data_path)
+
+        super().__init__(
+            name=f"scaledoc_{clean_name}_q{query_id}",
+            description=f"ScaleDoc {clean_name} query {query_id}",
+            data_path=resolved_path,
+            score_col=score_col,
+            label_col=label_col,
+        )
+        self.dataset_name = clean_name
+        self.query_id = query_id
+
+
+class ScaleDocPubMed(ScaleDocDataset):
+    """ScaleDoc PubMed query benchmark scenario."""
+
+    def __init__(
+        self,
+        query_id: int = 0,
+        data_dir: str | Path = "experiments/data/scaledoc",
+        score_col: str = "proxy_score",
+        label_col: str = "label",
+        data_path: str | Path | None = None,
+    ):
+        super().__init__(
+            dataset_name="pubmed",
+            query_id=query_id,
+            data_dir=data_dir,
+            score_col=score_col,
+            label_col=label_col,
+            data_path=data_path,
+        )
+
+
+class ScaleDocBigPatent(ScaleDocDataset):
+    """ScaleDoc BigPatent query benchmark scenario."""
+
+    def __init__(
+        self,
+        query_id: int = 0,
+        data_dir: str | Path = "experiments/data/scaledoc",
+        score_col: str = "proxy_score",
+        label_col: str = "label",
+        data_path: str | Path | None = None,
+    ):
+        super().__init__(
+            dataset_name="big_patent",
+            query_id=query_id,
+            data_dir=data_dir,
+            score_col=score_col,
+            label_col=label_col,
+            data_path=data_path,
+        )
+
+
+class ScaleDocGovReport(ScaleDocDataset):
+    """ScaleDoc GovReport query benchmark scenario."""
+
+    def __init__(
+        self,
+        query_id: int = 0,
+        data_dir: str | Path = "experiments/data/scaledoc",
+        score_col: str = "proxy_score",
+        label_col: str = "label",
+        data_path: str | Path | None = None,
+    ):
+        super().__init__(
+            dataset_name="gov_report",
+            query_id=query_id,
+            data_dir=data_dir,
+            score_col=score_col,
+            label_col=label_col,
+            data_path=data_path,
+        )
+
+
+class _ScenarioRegistry(dict):
+    """
+    Scenario registry supporting static lookups and dynamic instantiation
+    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1').
+    """
+
+    def __missing__(self, key: str) -> BaseScenario:
+        m = re.match(r"^scaledoc_(pubmed|big_patent|gov_report)_q(\d+)$", key)
+        if m:
+            ds_name, qid = m.group(1), int(m.group(2))
+            scenario = ScaleDocDataset(dataset_name=ds_name, query_id=qid)
+            self[key] = scenario
+            return scenario
+        raise KeyError(f"Unknown scenario '{key}'")
+
+
+SCENARIOS = _ScenarioRegistry({
     # Adversarial / Floor Stress Tests
     "uninformative_proxy_floor": UninformativeProxyFloor(),
     "precision_tail_overfit": PrecisionTailOverfit(),
@@ -1111,7 +1282,11 @@ SCENARIOS = {
     "supg_imagenet": SUPGImageNet(),
     "supg_jackson": SUPGJackson(),
     "supg_tacred": SUPGTACRED(),
-}
+    # ScaleDoc Benchmarks (defaults: query 0)
+    "scaledoc_pubmed_q0": ScaleDocPubMed(query_id=0),
+    "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id=0),
+    "scaledoc_gov_report_q0": ScaleDocGovReport(query_id=0),
+})
 
 
 __all__ = [
@@ -1133,6 +1308,10 @@ __all__ = [
     "SUPGJackson",
     "SUPGTACRED",
     "SUPGTacred",
+    "ScaleDocDataset",
+    "ScaleDocPubMed",
+    "ScaleDocBigPatent",
+    "ScaleDocGovReport",
     "SCENARIOS",
 ]
 

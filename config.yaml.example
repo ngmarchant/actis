@@ -1,0 +1,66 @@
+# ==============================================================================
+# LiteLLM Configuration (config.yaml)
+#
+# Copy this file to 'config.yaml' and customize for your Azure deployment(s):
+#   cp config.yaml.example config.yaml
+#
+# Allows setting region-specific pricing per deployment. model_name must match
+# litellm_params.model (the provider-qualified name, e.g. "azure/gpt-4o") so
+# LiteLLMOracle/LiteLLMProxy can be constructed with model=<that name> directly.
+# ==============================================================================
+
+model_list:
+  - model_name: azure/gpt-4o
+    litellm_params:
+      model: azure/gpt-4o
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      litelllm_provider: azure
+      deprecation_date: 2027-04-14
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+      max_tokens: 16384
+      input_cost_per_token: 0.000003476
+      output_cost_per_token: 0.000013905
+      cache_creation_input_token_cost: 0.000001738
+      mode: chat
+      supports_function_calling: true,
+      supports_parallel_function_calling: true,
+      supports_prompt_caching: true,
+      supports_response_schema: true,
+      supports_tool_choice: true,
+      supports_vision: true
+
+  - model_name: azure/gpt-5
+    litellm_params:
+      model: azure/gpt-5
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      litelllm_provider: azure
+      deprecation_date: 2027-02-09
+      max_input_tokens: 272000
+      max_output_tokens: 128000
+      max_tokens: 128000
+      input_cost_per_token: 0.00000174
+      output_cost_per_token: 0.00001391
+      cache_read_input_token_cost: 0.00000018
+      mode: chat
+      supported_endpoints:
+        - /v1/chat/completions
+        - /v1/batch
+        - /v1/responses
+      supported_modalities:
+        - text
+        - image
+      supported_output_modalities: 
+        - text
+      supports_function_calling: true
+      supports_native_streaming: true
+      supports_parallel_function_calling: true
+      supports_pdf_input: true
+      supports_prompt_caching: true
+      supports_reasoning: true
+      supports_response_schema: true
+      supports_system_messages: true
+      supports_tool_choice: true
+      supports_vision: true

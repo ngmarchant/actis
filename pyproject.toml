@@ -39,6 +39,12 @@ experiments = [
     "lotus-ai @ git+ssh://git@github.com/ngmarchant/lotus.git@perf",
     "scikit-learn",
     "torch",
+    "litellm>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "pyarrow>=14.0.0",
+    "py7zr>=0.20.0",
 ]
 
 [tool.uv]
@@ -56,3 +62,6 @@ line-length = 88
 [tool.ruff.lint]
 # Active linting rules (Errors, Flake8, Isort imports, Warnings)
 select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
