@@ -25,6 +25,7 @@ from litellm.types.llms.openai import (
     ChatCompletionSystemMessage,
     ChatCompletionUserMessage,
 )
+from scipy.special import expit, logsumexp
 
 ConfigType = (
     str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
@@ -54,20 +55,28 @@ class CostEstimate:
         )
 
 
+@dataclass
+class OracleOutput:
+    """Output container for oracle model predictions."""
+
+    labels: list[bool]
+    scores: list[float] | None = None
+    costs: list[dict[str, Any]] | None = None
+
+
 class BaseOracle(ABC):
     """Abstract base class for ground-truth oracle models."""
 
     @abstractmethod
     def predict(
         self, items: list[Any], query: Any
-    ) -> tuple[list[bool], list[dict[str, Any]]]:
+    ) -> OracleOutput:
         """
-        Predicts binary boolean labels and per-item cost dictionaries.
+        Predicts binary boolean labels, continuous confidence scores, and per-item
+        costs.
 
         Returns:
-            A tuple (labels, costs):
-                - labels: list of boolean predictions.
-                - costs: list of cost dictionaries, one per item.
+            OracleOutput containing labels, optional scores, and optional costs.
         """
         pass
 
@@ -128,8 +137,27 @@ class CallableOracle(BaseOracle):
 
     def predict(
         self, items: list[Any], query: Any
-    ) -> tuple[list[bool], list[dict[str, Any]]]:
-        return _parse_callable_output(self.func(items, query), bool, self.default_cost)
+    ) -> OracleOutput:
+        res = self.func(items, query)
+        if isinstance(res, OracleOutput):
+            return res
+        if (
+            isinstance(res, tuple)
+            and len(res) == 2
+            and isinstance(res[1], (list, tuple))
+        ):
+            labels, costs = res
+            return OracleOutput(
+                labels=[bool(x) for x in labels],
+                scores=None,
+                costs=list(costs),
+            )
+        labels = [bool(x) for x in res]
+        return OracleOutput(
+            labels=labels,
+            scores=None,
+            costs=[self.default_cost.copy() for _ in labels],
+        )
 
 
 class CallableProxy(BaseProxy):
@@ -153,7 +181,7 @@ class CallableProxy(BaseProxy):
 
 DEFAULT_SCALEDOC_SYSTEM_PROMPT = (
     "You are a helpful assistant. Please answer the question according to the "
-    "provided document. Just output the 'Yes' or 'No' only."
+    "provided document. Just output the '{positive_label}' or '{negative_label}' only."
 )
 DEFAULT_SCALEDOC_USER_TEMPLATE = "## Document:\n{doc}\n## Question:\n{query}."
 
@@ -163,11 +191,30 @@ def _default_prompt_formatter(
     query: Any,
     sys_prompt: str,
     user_tmpl: str,
+    positive_label: str = "Yes",
+    negative_label: str = "No",
 ) -> list[AllMessageValues]:
     doc_str = str(item)
-    user_str = user_tmpl.format(doc=doc_str, query=str(query))
+    user_str = (
+        user_tmpl.format(
+            doc=doc_str,
+            query=str(query),
+            positive_label=positive_label,
+            negative_label=negative_label,
+        )
+        if ("{positive_label}" in user_tmpl or "{negative_label}" in user_tmpl)
+        else user_tmpl.format(doc=doc_str, query=str(query))
+    )
+    sys_str = (
+        sys_prompt.format(
+            positive_label=positive_label,
+            negative_label=negative_label,
+        )
+        if ("{positive_label}" in sys_prompt or "{negative_label}" in sys_prompt)
+        else sys_prompt
+    )
     return [
-        ChatCompletionSystemMessage(role="system", content=sys_prompt),
+        ChatCompletionSystemMessage(role="system", content=sys_str),
         ChatCompletionUserMessage(role="user", content=user_str),
     ]
 
@@ -251,11 +298,13 @@ class BaseLiteLLMModel:
         model: str,
         system_prompt: str = DEFAULT_SCALEDOC_SYSTEM_PROMPT,
         user_prompt_template: str = DEFAULT_SCALEDOC_USER_TEMPLATE,
-        prompt_formatter: Callable[[Any, Any], list[AllMessageValues]] | None = None,
+        prompt_formatter: Callable[..., list[AllMessageValues]] | None = None,
         max_concurrency: int = 10,
         max_retries: int = 5,
         litellm_kwargs: dict[str, Any] | None = None,
         config: ConfigType = None,
+        positive_label: str = "Yes",
+        negative_label: str = "No",
     ):
         self.model = model
         self.system_prompt = system_prompt
@@ -264,6 +313,8 @@ class BaseLiteLLMModel:
         self.max_concurrency = max_concurrency
         self.max_retries = max_retries
         self.litellm_kwargs = dict(litellm_kwargs or {})
+        self.positive_label = positive_label
+        self.negative_label = negative_label
 
         self.router: litellm.Router | None = None
         if config is not None:
@@ -277,6 +328,8 @@ class BaseLiteLLMModel:
             query=query,
             sys_prompt=self.system_prompt,
             user_tmpl=self.user_prompt_template,
+            positive_label=self.positive_label,
+            negative_label=self.negative_label,
         )
 
     def estimate_cost(self, items: list[Any], query: Any) -> CostEstimate:
@@ -397,13 +450,20 @@ def _extract_litellm_cost_metrics(
     }
 
 
-def _extract_litellm_binary_probability(response: Any) -> float:
-    """Extracts binary yes/no probability from a LiteLLM logprob response."""
+def _extract_litellm_binary_probability(
+    response: Any,
+    positive_label: str = "Yes",
+    negative_label: str = "No",
+) -> float:
+    """Extracts binary positive/negative probability from a LiteLLM logprob response."""
     choice = response.choices[0]
     logprobs_info = getattr(choice, "logprobs", None)
 
-    yes_logprob = None
-    no_logprob = None
+    pos_target = positive_label.strip().lower()
+    neg_target = negative_label.strip().lower()
+
+    pos_logprobs: list[float] = []
+    neg_logprobs: list[float] = []
 
     if logprobs_info is not None:
         content_logprobs = getattr(logprobs_info, "content", None)
@@ -421,25 +481,27 @@ def _extract_litellm_binary_probability(response: Any) -> float:
                     if hasattr(entry, "logprob")
                     else -99.0
                 )
-                if tok in ("yes", "y", "true") and yes_logprob is None:
-                    yes_logprob = lp
-                elif tok in ("no", "n", "false") and no_logprob is None:
-                    no_logprob = lp
+                if tok == pos_target:
+                    pos_logprobs.append(lp)
+                elif tok == neg_target:
+                    neg_logprobs.append(lp)
 
-    if yes_logprob is not None and no_logprob is not None:
-        # Softmax over two logits via sigmoid of the log-odds (shift-invariant,
-        # avoids underflow when both logprobs are very negative).
-        return float(1.0 / (1.0 + math.exp(no_logprob - yes_logprob)))
-    if yes_logprob is not None:
-        return min(1.0, max(0.0, float(math.exp(yes_logprob))))
-    if no_logprob is not None:
-        return min(1.0, max(0.0, float(1.0 - math.exp(no_logprob))))
+    if pos_logprobs and neg_logprobs:
+        pos_lse = float(logsumexp(pos_logprobs))
+        neg_lse = float(logsumexp(neg_logprobs))
+        return float(expit(pos_lse - neg_lse))
+    if pos_logprobs:
+        pos_lse = float(logsumexp(pos_logprobs))
+        return min(1.0, max(0.0, float(math.exp(pos_lse))))
+    if neg_logprobs:
+        neg_lse = float(logsumexp(neg_logprobs))
+        return min(1.0, max(0.0, float(1.0 - math.exp(neg_lse))))
 
     # Fallback to generated text
     content = (choice.message.content or "").strip().lower()
-    if content.startswith("yes"):
+    if content.startswith(pos_target):
         return 1.0
-    if content.startswith("no"):
+    if content.startswith(neg_target):
         return 0.0
     return 0.5
 
@@ -448,7 +510,7 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
     """
     Oracle model powered by LiteLLM (OpenAI, Azure, Ollama, vLLM, etc.).
 
-    Predicts binary answers (Yes -> True, No -> False) with async concurrency,
+    Predicts binary answers with continuous confidence scores, async concurrency,
     rate limit handling, retry backoff, and upfront cost estimation.
     """
 
@@ -457,11 +519,13 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
         model: str = "gpt-4o",
         system_prompt: str = DEFAULT_SCALEDOC_SYSTEM_PROMPT,
         user_prompt_template: str = DEFAULT_SCALEDOC_USER_TEMPLATE,
-        prompt_formatter: Callable[[Any, Any], list[AllMessageValues]] | None = None,
+        prompt_formatter: Callable[..., list[AllMessageValues]] | None = None,
         max_concurrency: int = 10,
         max_retries: int = 5,
         litellm_kwargs: dict[str, Any] | None = None,
         config: ConfigType = None,
+        positive_label: str = "Yes",
+        negative_label: str = "No",
     ):
         super().__init__(
             model=model,
@@ -472,6 +536,8 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
             max_retries=max_retries,
             litellm_kwargs=litellm_kwargs,
             config=config,
+            positive_label=positive_label,
+            negative_label=negative_label,
         )
 
     async def _call_single(
@@ -479,30 +545,38 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
         item: Any,
         query: Any,
         semaphore: asyncio.Semaphore,
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, float, dict[str, Any]]:
         response = await self._call_litellm(
             item=item,
             query=query,
             semaphore=semaphore,
             max_tokens=1,
+            logprobs=True,
+            top_logprobs=20,
         )
-        content = response.choices[0].message.content or ""
-        clean_str = content.strip().lower()
-        label = clean_str.startswith("yes")
+        content = (response.choices[0].message.content or "").strip().lower()
+        pos_target = self.positive_label.strip().lower()
+        label = content.startswith(pos_target)
+        score = _extract_litellm_binary_probability(
+            response,
+            positive_label=self.positive_label,
+            negative_label=self.negative_label,
+        )
         cost = _extract_litellm_cost_metrics(response, self.model)
-        return label, cost
+        return label, score, cost
 
     async def apredict(
         self, items: list[Any], query: Any
-    ) -> tuple[list[bool], list[dict[str, Any]]]:
+    ) -> OracleOutput:
         results = await self._batch_call(items, query, self._call_single)
         labels = [r[0] for r in results]
-        costs = [r[1] for r in results]
-        return labels, costs
+        scores = [r[1] for r in results]
+        costs = [r[2] for r in results]
+        return OracleOutput(labels=labels, scores=scores, costs=costs)
 
     def predict(
         self, items: list[Any], query: Any
-    ) -> tuple[list[bool], list[dict[str, Any]]]:
+    ) -> OracleOutput:
         return asyncio.run(self.apredict(items, query))
 
 
@@ -510,8 +584,8 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
     """
     Proxy scoring model powered by LiteLLM.
 
-    Extracts next-token logprobs for 'Yes' vs 'No' to calculate calibrated
-    probabilities P('Yes' | item, query) in [0.0, 1.0].
+    Extracts next-token logprobs to calculate calibrated probabilities
+    P(positive | item, query) in [0.0, 1.0].
     """
 
     def __init__(
@@ -519,11 +593,13 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
         model: str,
         system_prompt: str = DEFAULT_SCALEDOC_SYSTEM_PROMPT,
         user_prompt_template: str = DEFAULT_SCALEDOC_USER_TEMPLATE,
-        prompt_formatter: Callable[[Any, Any], list[AllMessageValues]] | None = None,
+        prompt_formatter: Callable[..., list[AllMessageValues]] | None = None,
         max_concurrency: int = 10,
         max_retries: int = 5,
         litellm_kwargs: dict[str, Any] | None = None,
         config: ConfigType = None,
+        positive_label: str = "Yes",
+        negative_label: str = "No",
     ):
         super().__init__(
             model=model,
@@ -534,6 +610,8 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
             max_retries=max_retries,
             litellm_kwargs=litellm_kwargs,
             config=config,
+            positive_label=positive_label,
+            negative_label=negative_label,
         )
 
     async def _call_single(
@@ -548,9 +626,13 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
             semaphore=semaphore,
             max_tokens=1,
             logprobs=True,
-            top_logprobs=5,
+            top_logprobs=20,
         )
-        score = _extract_litellm_binary_probability(response)
+        score = _extract_litellm_binary_probability(
+            response,
+            positive_label=self.positive_label,
+            negative_label=self.negative_label,
+        )
         cost = _extract_litellm_cost_metrics(response, self.model)
         return score, cost
 

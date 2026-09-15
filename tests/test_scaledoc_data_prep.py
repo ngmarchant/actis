@@ -23,6 +23,7 @@ from experiments.data_prep.loaders import (
     parse_pubmed_text,
 )
 from experiments.data_prep.models import (
+    DEFAULT_SCALEDOC_SYSTEM_PROMPT,
     BaseOracle,
     BaseProxy,
     CallableOracle,
@@ -30,6 +31,9 @@ from experiments.data_prep.models import (
     CostEstimate,
     LiteLLMOracle,
     LiteLLMProxy,
+    OracleOutput,
+    _default_prompt_formatter,
+    _extract_litellm_binary_probability,
     load_litellm_config,
 )
 from experiments.scenarios import (
@@ -174,11 +178,13 @@ def test_litellm_oracle_mocked():
 
     mock_side_effect = AsyncMock(side_effect=[mock_resp_yes, mock_resp_no])
     with patch("litellm.acompletion", mock_side_effect):
-        preds, costs = oracle.predict(["doc 1", "doc 2"], "query?")
-        assert preds == [True, False]
-        assert len(costs) == 2
-        assert costs[0]["input_tokens"] == 10
-        assert costs[1]["input_tokens"] == 12
+        out = oracle.predict(["doc 1", "doc 2"], "query?")
+        assert isinstance(out, OracleOutput)
+        assert out.labels == [True, False]
+        assert len(out.costs) == 2
+        assert out.costs[0]["input_tokens"] == 10
+        assert out.costs[1]["input_tokens"] == 12
+        assert out.scores == [1.0, 0.0]
 
 
 def test_litellm_proxy_mocked():
@@ -458,10 +464,11 @@ def test_oracle_router_acompletion_call(tmp_path):
 
     oracle.router.acompletion = AsyncMock(return_value=mock_resp)
 
-    labels, costs = oracle.predict(["doc 1"], "is valid?")
-    assert labels == [True]
-    assert len(costs) == 1
-    assert costs[0]["input_tokens"] == 5
+    out = oracle.predict(["doc 1"], "is valid?")
+    assert isinstance(out, OracleOutput)
+    assert out.labels == [True]
+    assert len(out.costs) == 1
+    assert out.costs[0]["input_tokens"] == 5
     assert oracle.router.acompletion.await_count == 1
 
 
@@ -477,9 +484,10 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
 
     # Step 1: Add oracle labels with costs
     mock_oracle = MagicMock(spec=BaseOracle)
-    mock_oracle.predict.return_value = (
-        [True, False],
-        [
+    mock_oracle.predict.return_value = OracleOutput(
+        labels=[True, False],
+        scores=[0.95, 0.05],
+        costs=[
             {"monetary": 0.001, "input_tokens": 10},
             {"monetary": 0.002, "input_tokens": 20},
         ],
@@ -496,11 +504,18 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
     )
     save_dataset(ds_with_oracle, target_file, format="parquet")
 
-    # Verify target file has label and oracle_cost
+    # Verify target file has label, oracle_score, and oracle_cost
     loaded = load_query_dataset(target_file, format="parquet")
     assert loaded is not None
-    assert loaded.column_names == ["id", "content", "label", "oracle_cost"]
+    assert loaded.column_names == [
+        "id",
+        "content",
+        "label",
+        "oracle_score",
+        "oracle_cost",
+    ]
     assert loaded["label"] == [True, False]
+    assert loaded["oracle_score"] == pytest.approx([0.95, 0.05])
     assert loaded["oracle_cost"][0]["monetary"] == 0.001
 
     # Step 2: Add proxy scores to the existing dataset
@@ -524,13 +539,14 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
     )
     save_dataset(ds_with_both, target_file, format="parquet")
 
-    # Verify target file now contains BOTH label, oracle_cost, proxy_score, proxy_cost
+    # Verify target file now contains BOTH label, oracle_score, oracle_cost, proxy_score, proxy_cost
     final_ds = load_query_dataset(target_file, format="parquet")
     assert final_ds is not None
     assert final_ds.column_names == [
         "id",
         "content",
         "label",
+        "oracle_score",
         "oracle_cost",
         "proxy_score",
         "proxy_cost",
@@ -646,18 +662,20 @@ def test_create_execution_plan_and_summary(tmp_path):
 def test_callable_oracle_and_proxy_costs():
     # 1. Callable returning plain labels, default cost is empty dict
     co_default = CallableOracle(lambda items, q: [True for _ in items])
-    labels, costs = co_default.predict(["d1", "d2"], "q")
-    assert labels == [True, True]
-    assert costs == [{}, {}]
+    out1 = co_default.predict(["d1", "d2"], "q")
+    assert isinstance(out1, OracleOutput)
+    assert out1.labels == [True, True]
+    assert out1.costs == [{}, {}]
 
     # 2. Callable returning plain labels with custom default_cost
     co_custom = CallableOracle(
         lambda items, q: [False for _ in items],
         default_cost={"monetary": 0.05, "constant_calls": 1},
     )
-    labels2, costs2 = co_custom.predict(["d1"], "q")
-    assert labels2 == [False]
-    assert costs2 == [{"monetary": 0.05, "constant_calls": 1}]
+    out2 = co_custom.predict(["d1"], "q")
+    assert isinstance(out2, OracleOutput)
+    assert out2.labels == [False]
+    assert out2.costs == [{"monetary": 0.05, "constant_calls": 1}]
 
     # 3. Callable returning explicit (scores, costs) tuple
     cp_explicit = CallableProxy(
@@ -789,5 +807,101 @@ def test_scenarios_registry_with_ext_queries():
     assert str(sc_bp_ext.data_path).endswith("experiments/data/scaledoc/big_patent/q4_ext.parquet")
 
 
+def test_oracle_output_dataclass():
+    # Test construction with defaults
+    out_default = OracleOutput(labels=[True, False])
+    assert out_default.labels == [True, False]
+    assert out_default.scores is None
+    assert out_default.costs is None
+
+    # Test construction with explicit scores and costs
+    out_full = OracleOutput(
+        labels=[True],
+        scores=[0.95],
+        costs=[{"input_tokens": 10}],
+    )
+    assert out_full.labels == [True]
+    assert out_full.scores == [0.95]
+    assert out_full.costs == [{"input_tokens": 10}]
 
 
+def test_extract_binary_probability_custom_labels_and_logsumexp():
+    # Mock choice with logprobs for multiple positive tokens ('True', ' True') and negative ('False')
+    # Let lp('True') = -0.5, lp(' True') = -1.2, lp('False') = -0.8
+    # pos_lse = log(exp(-0.5) + exp(-1.2)) = log(0.6065 + 0.3012) = log(0.9077) = -0.0968
+    # neg_lse = -0.8
+    # expected sigmoid(pos_lse - neg_lse) = sigmoid(-0.0968 - (-0.8)) = sigmoid(0.7032) = 1 / (1 + exp(-0.7032)) ≈ 0.6689
+    mock_choice = MagicMock()
+    mock_choice.message.content = "True"
+    top_lp1 = MagicMock(token="True", logprob=-0.5)
+    top_lp2 = MagicMock(token="False", logprob=-0.8)
+    top_lp3 = MagicMock(token=" True", logprob=-1.2)
+
+    content_lp = MagicMock()
+    content_lp.top_logprobs = [top_lp1, top_lp2, top_lp3]
+    mock_choice.logprobs.content = [content_lp]
+    mock_resp = MagicMock(choices=[mock_choice])
+
+    score = _extract_litellm_binary_probability(
+        mock_resp,
+        positive_label="True",
+        negative_label="False",
+    )
+    assert score == pytest.approx(0.6689, abs=1e-3)
+
+
+def test_system_prompt_label_slots():
+    assert "{positive_label}" in DEFAULT_SCALEDOC_SYSTEM_PROMPT
+    assert "{negative_label}" in DEFAULT_SCALEDOC_SYSTEM_PROMPT
+
+    # Test default ScaleDoc formatting ("Yes" / "No")
+    messages_scaledoc = _default_prompt_formatter(
+        item="Sample doc",
+        query="Is it valid?",
+        sys_prompt=DEFAULT_SCALEDOC_SYSTEM_PROMPT,
+        user_tmpl="Doc: {doc}\nQuery: {query}",
+        positive_label="Yes",
+        negative_label="No",
+    )
+    assert "Just output the 'Yes' or 'No' only." in messages_scaledoc[0]["content"]
+
+    # Test custom formatting for BARGAIN ("True" / "False")
+    messages_bargain = _default_prompt_formatter(
+        item="Sample doc",
+        query="Is it valid?",
+        sys_prompt=DEFAULT_SCALEDOC_SYSTEM_PROMPT,
+        user_tmpl="Doc: {doc}\nQuery: {query}",
+        positive_label="True",
+        negative_label="False",
+    )
+    assert "Just output the 'True' or 'False' only." in messages_bargain[0]["content"]
+
+
+def test_add_oracle_labels_with_oracle_score():
+    ds = Dataset.from_dict({
+        "id": [0, 1],
+        "content": ["doc A", "doc B"],
+    })
+
+    mock_oracle = MagicMock(spec=BaseOracle)
+    mock_oracle.predict.return_value = OracleOutput(
+        labels=[True, False],
+        scores=[0.92, 0.08],
+        costs=[{"monetary": 0.001}, {"monetary": 0.001}],
+    )
+    mock_oracle.estimate_cost.return_value = None
+
+    result_ds = add_oracle_labels(
+        dataset=ds,
+        query="test query",
+        oracle=mock_oracle,
+        skip_cost_confirm=True,
+    )
+
+    assert "label" in result_ds.column_names
+    assert "oracle_score" in result_ds.column_names
+    assert "oracle_cost" in result_ds.column_names
+
+    assert result_ds["label"] == [True, False]
+    assert result_ds["oracle_score"] == pytest.approx([0.92, 0.08])
+    assert result_ds["oracle_cost"] == [{"monetary": 0.001}, {"monetary": 0.001}]

@@ -22,6 +22,7 @@ from experiments.data_prep.models import (
     BaseProxy,
     CallableOracle,
     CallableProxy,
+    OracleOutput,
 )
 
 
@@ -49,12 +50,14 @@ def add_model_output(
     query: Any,
     process_batch_fn: Callable[
         [list[Any], Any],
-        tuple[list[Any], list[dict[str, Any]]] | list[Any],
+        OracleOutput | tuple[list[Any], list[dict[str, Any]]] | list[Any],
     ],
     output_col: str,
     cost_col: str | None = None,
+    aux_col: str | None = None,
     input_col: str = "content",
     cast_fn: Callable[[Any], Any] = lambda x: x,
+    aux_cast_fn: Callable[[Any], Any] = lambda x: x,
     batch_size: int = 50,
     checkpoint_path: str | Path | None = None,
     cost_estimate: Any | None = None,
@@ -69,11 +72,14 @@ def add_model_output(
     Args:
         dataset: HuggingFace Dataset containing documents/items.
         query: Query object or natural language question.
-        process_batch_fn: Callable `(batch_items, query) -> tuple[outputs, costs]`.
+        process_batch_fn: Callable returning OracleOutput, (outputs, costs), or outputs.
         output_col: Column name to store the generated outputs.
         cost_col: Optional column name to store the per-record cost dictionary.
+        aux_col: Optional column name to store auxiliary outputs (e.g. continuous
+        scores).
         input_col: Column name containing the input items (text, image, etc.).
         cast_fn: Optional casting/validation function applied to each item output.
+        aux_cast_fn: Optional casting function applied to auxiliary output items.
         batch_size: Number of items to send per model invocation.
         checkpoint_path: Optional path to store incremental results.
         cost_estimate: Optional CostEstimate for upfront cost confirmation.
@@ -82,7 +88,8 @@ def add_model_output(
         desc: Progress bar description.
 
     Returns:
-        Updated HuggingFace Dataset with `output_col` (and `cost_col` if specified).
+        Updated HuggingFace Dataset with `output_col` (and `cost_col`/`aux_col` if
+        specified).
     """
     items = dataset[input_col]
     total_items = len(items)
@@ -102,11 +109,17 @@ def add_model_output(
                     if isinstance(v, dict) and "value" in v:
                         results[int(k)] = {
                             "value": cast_fn(v["value"]),
+                            "aux": (
+                                aux_cast_fn(v["aux"])
+                                if v.get("aux") is not None
+                                else None
+                            ),
                             "cost": dict(v.get("cost", {})),
                         }
                     else:
                         results[int(k)] = {
                             "value": cast_fn(v),
+                            "aux": None,
                             "cost": {},
                         }
             print(f"Loaded {len(results)} items from checkpoint '{cp_file}'.")
@@ -129,19 +142,35 @@ def add_model_output(
             batch_items = [items[i] for i in batch_idx]
 
             batch_res = process_batch_fn(batch_items, query)
-            if (
+            if isinstance(batch_res, OracleOutput):
+                batch_outputs = batch_res.labels
+                batch_aux = batch_res.scores
+                batch_costs = (
+                    batch_res.costs
+                    if batch_res.costs is not None
+                    else [{} for _ in batch_outputs]
+                )
+            elif (
                 isinstance(batch_res, tuple)
                 and len(batch_res) == 2
                 and isinstance(batch_res[1], (list, tuple))
             ):
                 batch_outputs, batch_costs = batch_res
+                batch_aux = None
             else:
                 batch_outputs = batch_res
+                batch_aux = None
                 batch_costs = [{} for _ in batch_outputs]
 
-            for idx, out, cost in zip(batch_idx, batch_outputs, batch_costs):
+            for i, (idx, out, cost) in enumerate(zip(batch_idx, batch_outputs, batch_costs)):
+                aux_val = (
+                    batch_aux[i]
+                    if batch_aux is not None and i < len(batch_aux)
+                    else None
+                )
                 results[idx] = {
                     "value": cast_fn(out),
+                    "aux": aux_cast_fn(aux_val) if aux_val is not None else None,
                     "cost": dict(cost),
                 }
 
@@ -156,6 +185,13 @@ def add_model_output(
     if output_col in dataset.column_names:
         dataset = dataset.remove_columns([output_col])
     dataset = dataset.add_column(output_col, final_outputs)
+
+    if aux_col is not None:
+        final_aux = [results[i].get("aux") for i in range(total_items)]
+        if any(x is not None for x in final_aux):
+            if aux_col in dataset.column_names:
+                dataset = dataset.remove_columns([aux_col])
+            dataset = dataset.add_column(aux_col, final_aux)
 
     if cost_col is not None:
         final_costs = [results[i]["cost"] for i in range(total_items)]
@@ -172,6 +208,7 @@ def add_oracle_labels(
     oracle: BaseOracle | Callable,
     input_col: str = "content",
     label_col: str = "label",
+    score_col: str | None = "oracle_score",
     cost_col: str | None = "oracle_cost",
     batch_size: int = 50,
     checkpoint_path: str | Path | None = None,
@@ -179,7 +216,8 @@ def add_oracle_labels(
     show_progress: bool = True,
 ) -> Dataset:
     """
-    Adds ground-truth boolean oracle labels and costs to a HuggingFace Dataset.
+    Adds ground-truth boolean oracle labels, continuous scores, and costs to a
+    HuggingFace Dataset.
 
     Args:
         dataset: HuggingFace Dataset containing documents/items.
@@ -187,6 +225,8 @@ def add_oracle_labels(
         oracle: BaseOracle instance or callable.
         input_col: Column name containing the input items (text, image, etc.).
         label_col: Column name to store the generated binary labels.
+        score_col: Column name to store continuous confidence scores (default:
+            'oracle_score').
         cost_col: Column name to store the per-item cost dictionary
             (default: 'oracle_cost').
         batch_size: Number of items to send per model invocation.
@@ -195,7 +235,8 @@ def add_oracle_labels(
         show_progress: If True, displays a tqdm progress bar.
 
     Returns:
-        Updated HuggingFace Dataset with `label_col` and `cost_col`.
+        Updated HuggingFace Dataset with `label_col`, `score_col` (if scores present),
+        and `cost_col`.
     """
     if not isinstance(oracle, BaseOracle):
         oracle = CallableOracle(oracle)
@@ -209,8 +250,10 @@ def add_oracle_labels(
         process_batch_fn=oracle.predict,
         output_col=label_col,
         cost_col=cost_col,
+        aux_col=score_col,
         input_col=input_col,
         cast_fn=bool,
+        aux_cast_fn=lambda x: float(x) if x is not None else None,
         batch_size=batch_size,
         checkpoint_path=checkpoint_path,
         cost_estimate=estimate,

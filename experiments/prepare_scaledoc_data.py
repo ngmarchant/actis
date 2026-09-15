@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
         default=["0"],
         help=(
             "List of query IDs to process (e.g. '0 1 0_ext'), or presets: "
-            "'all' (base + ext), 'base' (original queries), or 'ext' (extended queries). "
-            "(default: 0)"
+            "'all' (base + ext), 'base' (original queries), or 'ext' (extended queries)"
+            " (default: 0)"
         ),
     )
     parser.add_argument(
