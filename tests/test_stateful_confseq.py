@@ -7,7 +7,15 @@ from actis.confseq import BettingSupermartingale, GaussianMixtureSupermartingale
 from actis.tuner import ACTIS
 
 
-def _eval_confseq_reference(x, m, alpha, population_size=None, horizon=None, trunc_scale=0.5, m_trunc=True):
+def _eval_confseq_reference(
+    x,
+    m,
+    alpha,
+    pop_size=None,
+    horizon=None,
+    trunc_scale=0.5,
+    m_trunc=True
+) -> float:
     lambdas_fns = [
         lambda data, mean: lambda_predmix_eb(data, alpha=alpha, fixed_n=horizon)
     ]
@@ -16,7 +24,7 @@ def _eval_confseq_reference(x, m, alpha, population_size=None, horizon=None, tru
         m,
         alpha=alpha,
         lambdas_fns_positive=lambdas_fns,
-        N=population_size,
+        N=pop_size,
         convex_comb=True,
         theta=1,
         trunc_scale=trunc_scale,
@@ -28,18 +36,18 @@ def _eval_confseq_reference(x, m, alpha, population_size=None, horizon=None, tru
 class TestGaussianMixtureSupermartingale:
 
     @pytest.mark.parametrize("m", [0.0, 0.2, -0.1])
-    @pytest.mark.parametrize("v0", [0.01, 0.1, 1.0, 5.0])
-    def test_batch_vs_full_parity(self, m, v0):
+    @pytest.mark.parametrize("v_0", [0.01, 0.1, 1.0, 5.0])
+    def test_batch_vs_full_parity(self, m, v_0):
         rng = np.random.default_rng(42)
         x = rng.normal(loc=m + 0.05, scale=0.5, size=500)
 
         # Full single-shot evaluation
-        mart_full = GaussianMixtureSupermartingale(m=m, v0=v0)
+        mart_full = GaussianMixtureSupermartingale(m=m, v_0=v_0)
         mart_full.update(x)
         w_full = mart_full.wealth()
 
         # Multi-batch incremental evaluation
-        mart_step = GaussianMixtureSupermartingale(m=m, v0=v0)
+        mart_step = GaussianMixtureSupermartingale(m=m, v_0=v_0)
         chunk_sizes = [50, 100, 150, 200]
         idx = 0
         for sz in chunk_sizes:
@@ -49,29 +57,29 @@ class TestGaussianMixtureSupermartingale:
         assert np.isclose(w_full, mart_step.wealth(), rtol=1e-12, atol=1e-12)
 
     def test_empty_update(self):
-        mart = GaussianMixtureSupermartingale(m=0.0, v0=1.0)
+        mart = GaussianMixtureSupermartingale(m=0.0, v_0=1.0)
         mart.update([])
         assert mart.wealth() == 1.0
 
 
 class TestBettingSupermartingale:
 
-    @pytest.mark.parametrize("population_size", [None, 1000])
+    @pytest.mark.parametrize("pop_size", [None, 1000])
     @pytest.mark.parametrize("horizon", [None, 300])
     @pytest.mark.parametrize("alpha", [0.01, 0.05, 0.1])
     @pytest.mark.parametrize("m", [0.0, 0.2, 0.5, 0.8, 1.0])
-    def test_confseq_library_parity(self, population_size, horizon, alpha, m):
+    def test_confseq_library_parity(self, pop_size, horizon, alpha, m):
         rng = np.random.default_rng(123)
         x = rng.uniform(0.0, 1.0, size=300)
 
         # Reference from confseq library
         ref_wealth = _eval_confseq_reference(
-            x, m=m, alpha=alpha, population_size=population_size, horizon=horizon
+            x, m=m, alpha=alpha, pop_size=pop_size, horizon=horizon
         )
 
         # Incremental stateful BettingSupermartingale in multiple uneven chunks
         mart = BettingSupermartingale(
-            m=m, alpha=alpha, population_size=population_size, horizon=horizon
+            m=m, alpha=alpha, pop_size=pop_size, horizon=horizon
         )
         chunk_sizes = [30, 70, 100, 100]
         idx = 0
@@ -81,19 +89,19 @@ class TestBettingSupermartingale:
 
         assert np.isclose(mart.wealth(), ref_wealth, rtol=1e-10, atol=1e-10)
 
-    @pytest.mark.parametrize("population_size", [None, 500])
+    @pytest.mark.parametrize("pop_size", [None, 500])
     @pytest.mark.parametrize("m", [0.0, 0.3, 0.7, 1.0])
-    def test_reverse_betting_parity(self, population_size, m):
+    def test_reverse_betting_parity(self, pop_size, m):
         rng = np.random.default_rng(456)
         x = rng.uniform(0.0, 1.0, size=200)
 
         # Reverse testing H0: mean >= m by testing (1 - x) against (1 - m)
         ref_rev_wealth = _eval_confseq_reference(
-            1.0 - x, m=1.0 - m, alpha=0.05, population_size=population_size, horizon=None
+            1.0 - x, m=1.0 - m, alpha=0.05, pop_size=pop_size, horizon=None
         )
 
         mart_rev = BettingSupermartingale(
-            m=m, alpha=0.05, population_size=population_size, horizon=None, reverse=True
+            m=m, alpha=0.05, pop_size=pop_size, horizon=None, reverse=True
         )
         mart_rev.update(x[:80])
         mart_rev.update(x[80:])
@@ -134,7 +142,7 @@ class TestACTISTunerStateParity:
             thresholds_upper=thresholds_upper,
             pop_size=None,
             conf_seq=conf_seq,
-            v0=0.01,
+            v_0=0.01,
         )
         res_oneshot = tuner_oneshot.add_samples(
             indices=np.arange(N),
@@ -152,7 +160,7 @@ class TestACTISTunerStateParity:
             thresholds_upper=thresholds_upper,
             pop_size=None,
             conf_seq=conf_seq,
-            v0=0.01,
+            v_0=0.01,
         )
         batch_size = 100
         for i in range(0, N, batch_size):
@@ -184,7 +192,7 @@ class TestACTISTunerStateParity:
         weights = 1.0 / (q * N)
 
         max_weight_ge = np.array([
-            weights[scores >= tau].max() if np.any(scores >= tau) else float(weights.max())
+            weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
             for tau in thresholds
         ])
         max_weight_lt = np.array([
@@ -192,7 +200,7 @@ class TestACTISTunerStateParity:
             for tau in thresholds
         ])
         max_weight_ge_upper = np.array([
-            weights[scores >= tau].max() if np.any(scores >= tau) else float(weights.max())
+            weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
             for tau in thresholds_upper
         ])
 
@@ -205,7 +213,7 @@ class TestACTISTunerStateParity:
             thresholds_upper=thresholds_upper,
             pop_size=None,
             conf_seq=conf_seq,
-            v0=0.01,
+            v_0=0.01,
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,
@@ -227,7 +235,7 @@ class TestACTISTunerStateParity:
             thresholds_upper=thresholds_upper,
             pop_size=None,
             conf_seq=conf_seq,
-            v0=0.01,
+            v_0=0.01,
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,

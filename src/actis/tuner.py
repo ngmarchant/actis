@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
+import scipy.special
 import scipy.stats
 from numpy.typing import ArrayLike, NDArray
 
@@ -60,7 +61,7 @@ class AsymptoticValidityDiagnostics:
             )
         n_active = self.num_true_positives + self.num_false_negatives_or_positives
         self.p_value = float(
-            scipy.stats.binom.cdf(
+            scipy.special.bdtr(
                 self.num_false_negatives_or_positives,
                 n_active,
                 self.null_failure_prob,
@@ -501,7 +502,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         return BettingSupermartingale(
             m=target_mean,
             alpha=self.delta_R,
-            population_size=self.pop_size,
+            pop_size=self.pop_size,
             horizon=self.horizon,
             reverse=reverse,
         )
@@ -534,7 +535,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         return BettingSupermartingale(
             m=target_mean,
             alpha=self.delta_P / len(self.thresholds),
-            population_size=self.pop_size,
+            pop_size=self.pop_size,
             horizon=self.horizon,
             reverse=reverse,
         )
@@ -701,8 +702,9 @@ def compute_prior_and_target_var(
 
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float64)
+        max_weight = float(np.max(weights))
     else:
-        weights = np.ones(N, dtype=np.float64)
+        max_weight = 1.0
 
     if n_0 == "auto":
         eff_n_0 = min(1000.0, max(50.0, 0.1 * N))
@@ -714,13 +716,15 @@ def compute_prior_and_target_var(
     delta_P = delta / 2.0
 
     log_delta_R_inv = math.log(1.0 / delta_R)
-    max_weight = float(np.max(weights))
 
     # Fallback when no threshold grid is specified
     if thresholds is None:
         b = max(1.0 - gamma_R, 1.0 - gamma_P) * max_weight
         v_0_floor = (2.0 * b**2) / log_delta_R_inv
-        weighted_pos_mass = float(np.mean(scores * weights))
+        if weights is not None:
+            weighted_pos_mass = float(np.mean(scores * weights))
+        else:
+            weighted_pos_mass = float(np.mean(scores))
         sigma2 = max(weighted_pos_mass, 1.0 / N) * gamma_R * (1.0 - gamma_R)
         v_0_target = eff_n_0 * sigma2
         return PriorAndTargetVar(
@@ -737,50 +741,93 @@ def compute_prior_and_target_var(
     delta_P_corrected = delta_P / max(1, M_lower)
     log_delta_P_inv = math.log(1.0 / delta_P_corrected)
 
-    if thresholds_upper is not None:
-        thresholds_upper = np.asarray(thresholds_upper, dtype=np.float64)
-    else:
-        thresholds_upper = thresholds
-
     # Sort items by proxy score to enable O(1) prefix/suffix query per threshold
     order = np.argsort(scores)
     scores_sorted = scores[order]
+
+    idx_lower = np.searchsorted(scores_sorted, thresholds, side="left")
+    if thresholds_upper is None or thresholds_upper is thresholds:
+        thresholds_upper = thresholds
+        idx_upper = idx_lower
+    else:
+        thresholds_upper = np.asarray(thresholds_upper, dtype=np.float64)
+        idx_upper = np.searchsorted(scores_sorted, thresholds_upper, side="left")
+
+    M_upper = len(thresholds_upper)
+
+    if weights is None:
+        prefix_sum_pos = (
+            np.concatenate(([0.0], np.cumsum(scores_sorted))) * max_weight
+        )
+        suffix_sum_pos = (
+            np.append(np.cumsum(scores_sorted[::-1])[::-1], 0.0) * max_weight
+        )
+
+        pos_mass_ge_lower = suffix_sum_pos[idx_lower] / N
+        pos_mass_lt_lower = prefix_sum_pos[idx_lower] / N
+
+        b_R = (1.0 - gamma_R) * max_weight
+        v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
+        sigma2_R = (
+            (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R**2) * pos_mass_lt_lower
+        )
+        v_0_target_R = eff_n_0 * sigma2_R
+        v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
+        null_failure_prob_R = np.full(M_lower, 1 - gamma_R, dtype=np.float64)
+
+        pos_mass_ge_upper = (
+            suffix_sum_pos[idx_upper] / N
+            if idx_upper is not idx_lower
+            else pos_mass_ge_lower
+        )
+        neg_mass_ge_upper = np.maximum(
+            0.0,
+            (N - idx_upper) / N * max_weight - pos_mass_ge_upper
+        )
+        neg_var_upper = (gamma_P**2) * neg_mass_ge_upper
+        pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
+
+        b_P = (1.0 - gamma_P) * max_weight
+        v_0_floor_P = (2.0 * b_P**2) / log_delta_P_inv
+
+        total_var = neg_var_upper[:, np.newaxis] + pos_var_lower[np.newaxis, :]
+        v_0_target_P = eff_n_0 * total_var
+        v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
+        null_failure_prob_P = np.full((M_upper, M_lower), 1 - gamma_P, dtype=np.float64)
+
+        return PriorAndTargetVar(
+            prior_R=v_0_R,
+            prior_P=v_0_P,
+            target_R=v_0_target_R,
+            target_P=v_0_target_P,
+            null_failure_prob_R=null_failure_prob_R,
+            null_failure_prob_P=null_failure_prob_P,
+        )
+
     weights_sorted = weights[order]
 
     # Proposal probability per sorted item: w_i = 1 / (N * q_i) => q_i = 1 / (N * w_i)
     q_sorted = 1.0 / (N * weights_sorted)
 
-    # Precompute weighted label probabilities and proposal distributions
-    weighted_pos_prob = scores_sorted * weights_sorted
-    weighted_neg_prob = (1.0 - scores_sorted) * weights_sorted
-
     # Suffix accumulations for items with s_i >= tau (reverse cumsum):
     # Appending terminal values ensures valid indices when thresholds exceed max score.
     suffix_max_weight = np.append(
         np.maximum.accumulate(weights_sorted[::-1])[::-1],
-        max_weight
+        max_weight,
     )
-    suffix_sum_pos_prob = np.append(
-        np.cumsum(weighted_pos_prob[::-1])[::-1],
-        0.0
-    )
-    suffix_sum_neg_prob = np.append(
-        np.cumsum(weighted_neg_prob[::-1])[::-1],
-        0.0
-    )
-
-    # Total expected positive and proposal masses across population
-    total_pos_mass = suffix_sum_pos_prob[0] / N
-
-    # -------------------------------------------------------------------------
-    # 1. Recall prior variance and proposal-adjusted binomial null probability
-    # -------------------------------------------------------------------------
-    idx_lower = np.searchsorted(scores_sorted, thresholds, side="left")
     w_max_lower = suffix_max_weight[idx_lower]
 
-    # Positive probability mass above and below each candidate lower threshold
+    # Precompute weighted label probabilities via direct prefix and suffix sums
+    # to avoid catastrophic cancellation in both lower and upper tails
+    weighted_pos_prob = scores_sorted * weights_sorted
+    prefix_sum_pos_prob = np.concatenate(([0.0], np.cumsum(weighted_pos_prob)))
+    suffix_sum_pos_prob = np.append(
+        np.cumsum(weighted_pos_prob[::-1])[::-1],
+        0.0,
+    )
+
     pos_mass_ge_lower = suffix_sum_pos_prob[idx_lower] / N
-    pos_mass_lt_lower = np.maximum(0.0, total_pos_mass - pos_mass_ge_lower)
+    pos_mass_lt_lower = prefix_sum_pos_prob[idx_lower] / N
 
     # Safety floor for recall (incorporates positive jumps only)
     b_R = (1.0 - gamma_R) * w_max_lower
@@ -794,21 +841,15 @@ def compute_prior_and_target_var(
     v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
 
     # Proposal-adjusted null failure probability for recall via partition density:
-    # Dropped partition D(tau_l) = {i : s_i < tau_l} has item count N_lt and proposal
-    # mass Q_lt.
-    # Retained partition R(tau_l) = {i : s_i >= tau_l} has item count N_ge and proposal
-    # mass Q_ge.
-    # eta_R(tau_l) = min(1.0, bar{q}_{< tau_l} / bar{q}_{>= tau_l})
-    cum_q = np.cumsum(q_sorted)
-    total_q = cum_q[-1]
+    # Direct prefix and suffix sums of q avoid subtractive cancellation in Q_ge
+    prefix_q = np.concatenate(([0.0], np.cumsum(q_sorted)))
+    suffix_q = np.append(np.cumsum(q_sorted[::-1])[::-1], 0.0)
 
     N_lt_lower = idx_lower.astype(np.float64)
     N_ge_lower = (N - idx_lower).astype(np.float64)
 
-    Q_lt_lower = np.zeros_like(N_lt_lower)
-    valid_lt_lower = idx_lower > 0
-    Q_lt_lower[valid_lt_lower] = cum_q[idx_lower[valid_lt_lower] - 1]
-    Q_ge_lower = np.maximum(0.0, total_q - Q_lt_lower)
+    Q_lt_lower = prefix_q[idx_lower]
+    Q_ge_lower = suffix_q[idx_lower]
 
     q_bar_lt_lower = np.where(
         N_lt_lower > 0,
@@ -831,10 +872,13 @@ def compute_prior_and_target_var(
     )
     null_failure_prob_R = np.clip(null_failure_prob_R, 0.0, 1.0 - gamma_R)
 
-    # -------------------------------------------------------------------------
-    # 2. Precision prior variance and proposal-adjusted binomial null probability
-    # -------------------------------------------------------------------------
-    idx_upper = np.searchsorted(scores_sorted, thresholds_upper, side="left")
+    # Precision prior and target variance:
+    # Direct suffix sum of weighted negative mass to prevent catastrophic cancellation
+    weighted_neg_prob = (1.0 - scores_sorted) * weights_sorted
+    suffix_sum_neg_prob = np.append(
+        np.cumsum(weighted_neg_prob[::-1])[::-1],
+        0.0,
+    )
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
     neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper
     pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
@@ -849,33 +893,56 @@ def compute_prior_and_target_var(
     v_0_target_P = eff_n_0 * total_var
     v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
 
-    # Proposal-adjusted null failure probability for precision via partition density:
-    # Candidate upper partition U(tau_u) = {i : s_i >= tau_u} has item count N_ge_upper
-    # and mass Q_ge_upper.
-    # Retained lower partition R(tau_l) = {i : s_i >= tau_l} has item count N_ge_lower
-    # and mass Q_ge_lower.
-    # eta_P(tau_u, tau_l) = min(1.0, bar{q}_{>= tau_u} / bar{q}_{>= tau_l})
-    N_ge_upper = (N - idx_upper).astype(np.float64)
-    Q_lt_upper = np.zeros_like(N_ge_upper)
-    valid_lt_upper = idx_upper > 0
-    Q_lt_upper[valid_lt_upper] = cum_q[idx_upper[valid_lt_upper] - 1]
-    Q_ge_upper = np.maximum(0.0, total_q - Q_lt_upper)
+    q_fp = q_sorted * (1.0 - scores_sorted)
+    q_tp = q_sorted * scores_sorted
+    n_fp_proxy = 1.0 - scores_sorted
+    n_tp_proxy = scores_sorted
 
-    q_bar_ge_upper = np.where(
-        N_ge_upper > 0,
-        Q_ge_upper / np.maximum(N_ge_upper, 1.0),
+    suffix_q_fp = np.append(np.cumsum(q_fp[::-1])[::-1], 0.0)
+    suffix_n_fp = np.append(np.cumsum(n_fp_proxy[::-1])[::-1], 0.0)
+    suffix_q_tp = np.append(np.cumsum(q_tp[::-1])[::-1], 0.0)
+    suffix_n_tp = np.append(np.cumsum(n_tp_proxy[::-1])[::-1], 0.0)
+
+    q_fp_upper = suffix_q_fp[idx_upper]
+    n_fp_upper = suffix_n_fp[idx_upper]
+    q_bar_fp_upper = np.where(
+        n_fp_upper > 1e-12,
+        q_fp_upper / np.maximum(n_fp_upper, 1e-12),
         1.0 / N,
     )
 
-    # 2D broadcast matrix of shape (M_upper, M_lower):
-    ratio_P = q_bar_ge_upper[:, np.newaxis] / np.maximum(
-        q_bar_ge_lower[np.newaxis, :], 1e-12
+    q_tp_lower = suffix_q_tp[idx_lower]
+    n_tp_lower = suffix_n_tp[idx_lower]
+    q_bar_tp_lower = np.where(
+        n_tp_lower > 1e-12,
+        q_tp_lower / np.maximum(n_tp_lower, 1e-12),
+        1.0 / N,
     )
-    eta_P = np.clip(ratio_P, 0.0, 1.0)
+
+    ratio_P_proxy = q_bar_fp_upper[:, np.newaxis] / np.maximum(
+        q_bar_tp_lower[np.newaxis, :], 1e-12
+    )
+
+    # Unconditional geometric worst-case bounds across valid partitions:
+    suffix_min_q = np.append(np.minimum.accumulate(q_sorted[::-1])[::-1], 1.0 / N)
+    suffix_max_q = np.append(np.maximum.accumulate(q_sorted[::-1])[::-1], 1.0 / N)
+    q_min_upper = suffix_min_q[idx_upper]
+    q_max_upper = suffix_max_q[idx_upper]
+    q_min_lower = suffix_min_q[idx_lower]
+    q_max_lower = suffix_max_q[idx_lower]
+
+    ratio_P_min = q_min_upper[:, np.newaxis] / np.maximum(
+        q_max_lower[np.newaxis, :], 1e-12
+    )
+    ratio_P_max = q_max_upper[:, np.newaxis] / np.maximum(
+        q_min_lower[np.newaxis, :], 1e-12
+    )
+
+    eta_P = np.clip(ratio_P_proxy, ratio_P_min, ratio_P_max)
     null_failure_prob_P = (
         (1.0 - gamma_P) * eta_P / (gamma_P + (1.0 - gamma_P) * eta_P)
     )
-    null_failure_prob_P = np.clip(null_failure_prob_P, 0.0, 1.0 - gamma_P)
+    null_failure_prob_P = np.clip(null_failure_prob_P, 1e-6, 0.5)
 
     return PriorAndTargetVar(
         prior_R=v_0_R,
@@ -901,7 +968,6 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         v_0: float | PriorAndTargetVar = 0.01,
         max_jump_ratio_bound: float = 0.50,
         variance_ratio_bound: float = 0.05,
-        conservative_correction: bool = False
     ) -> None:
         r"""
         Args:
@@ -923,8 +989,6 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
                 Defaults to 0.50.
             variance_ratio_bound: Maximum allowable ratio of cumulative process
                 variance to prior variance $V_t / v_0$. Defaults to 0.05.
-            conservative_correction: If True, applies a conservative correction to the
-                binomial null failure probability for the precision supermartingale.
         """
         super().__init__(gamma_P, gamma_R, delta, thresholds, thresholds_upper)
         if isinstance(v_0, PriorAndTargetVar):
@@ -933,7 +997,30 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             self.v_0 = PriorAndTargetVar(prior_R=v_0)
         self.max_jump_ratio_bound = max_jump_ratio_bound
         self.variance_ratio_bound = variance_ratio_bound
-        self.conservative_correction = conservative_correction
+
+        # Update when adding samples to speed up asymptotic diagnostics
+        self._num_tp = np.zeros(len(self.thresholds), dtype=np.int64)
+        self._num_fn = np.zeros(len(self.thresholds), dtype=np.int64)
+        self._num_fp = np.zeros(len(self.thresholds_upper), dtype=np.int64)
+
+    def add_samples(
+        self,
+        scores: Sequence[float] | NDArray[np.float64],
+        labels: Sequence[bool] | NDArray[np.bool_],
+        weights: Sequence[float] | NDArray[np.float64] | None = None,
+    ) -> None:
+        scores = np.asarray(scores, dtype=np.float64)
+        labels = np.asarray(labels, dtype=np.bool_)
+        super().add_samples(scores, labels, weights)
+
+        pos_scores = scores[labels]
+        if len(pos_scores) > 0:
+            self._num_tp += np.sum(pos_scores[:, None] >= self.thresholds, axis=0)
+            self._num_fn += np.sum(pos_scores[:, None] < self.thresholds, axis=0)
+
+        neg_scores = scores[~labels]
+        if len(neg_scores) > 0:
+            self._num_fp += np.sum(neg_scores[:, None] >= self.thresholds_upper, axis=0)
 
     def _create_mart_R(
         self,
@@ -993,8 +1080,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             return None
 
         tau_lower = self.thresholds[k_lower]
-        num_true_positives = np.sum(self.labels & (self.scores >= tau_lower))
-        num_false_negatives = np.sum(self.labels & (self.scores < tau_lower))
+        num_true_positives = self._num_tp[k_lower]
+        num_false_negatives = self._num_fn[k_lower]
 
         mart = self._get_mart_R(k_lower, reverse=False)
         assert isinstance(mart, GaussianMixtureSupermartingale)
@@ -1003,19 +1090,10 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         if null_failure_prob is None:
             null_failure_prob = 1.0 - self.gamma_R
 
-        rvs = self._get_rvs_R(
-            k_lower, self.scores, self.labels, self.weights
-        )
-        if mart.v_t > 0.0 and len(rvs) > 0:
-            mean = np.mean(rvs)
-            rho_max = np.max((rvs - mean) ** 2) / mart.v_t
-        else:
-            rho_max = 0.0
-
         return AsymptoticValidityDiagnostics(
             v_t=mart.v_t,
             v_0=self.v_0.target_R(k_lower),
-            rho_max=float(rho_max),
+            rho_max=mart.rho_max,
             num_true_positives=int(num_true_positives),
             num_false_negatives_or_positives=int(num_false_negatives),
             null_failure_prob=null_failure_prob,
@@ -1036,8 +1114,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
 
         tau_lower = self.thresholds[k_lower]
         tau_upper = self.thresholds_upper[k_upper]
-        num_false_positives = np.sum((~self.labels) & (self.scores >= tau_upper))
-        num_true_positives = np.sum(self.labels & (self.scores >= tau_lower))
+        num_false_positives = self._num_fp[k_upper]
+        num_true_positives = self._num_tp[k_lower]
 
         mart = self._get_mart_P(k_upper, k_lower, reverse=False)
         assert isinstance(mart, GaussianMixtureSupermartingale)
@@ -1047,22 +1125,11 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         if null_failure_prob is None:
             null_failure_prob = 1.0 - self.gamma_P
 
-        rvs = self._get_rvs_P(
-            k_upper, k_lower, self.scores, self.labels, self.weights
-        )
-        if mart.v_t > 0.0 and len(rvs) > 0:
-            mean = np.mean(rvs)
-            rho_max = np.max((rvs - mean) ** 2) / mart.v_t
-        else:
-            rho_max = 0.0
-
         delta = self.delta_P
-        if self.conservative_correction:
-            delta = delta / len(self.thresholds)
         return AsymptoticValidityDiagnostics(
             v_t=mart.v_t,
             v_0=v_0_target,
-            rho_max=float(rho_max),
+            rho_max=mart.rho_max,
             num_true_positives=int(num_true_positives),
             num_false_negatives_or_positives=int(num_false_positives),
             null_failure_prob=null_failure_prob,
@@ -1095,7 +1162,6 @@ class ACTIS:
         max_weight_lt: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None,
         enable_asymptotic_protection: bool = True,
-        conservative_correction: bool = False,
         variance_ratio_bound: float = 0.05,
         max_jump_ratio_bound: float = 0.50,
     ):
@@ -1160,10 +1226,6 @@ class ACTIS:
                 heuristic protection for anytime-valid FWER control when operating in
                 the non-asymptotic regime. This arugment has no effect when
                 `conf_seq='finite'`.
-            conservative_correction: If `conf_seq='asymptotic'` and True, applies a
-                conservative correction to the binomial null failure probability for the
-                precision supermartingale. This argument has no effect when
-                `conf_seq='finite'` or when `enable_asymptotic_protection` is False.
             variance_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies
                 the maximum allowable ratio of cumulative process variance to prior
                 variance $V_t / v_0$. Defaults to 0.05. This argument has no effect when
@@ -1202,7 +1264,6 @@ class ACTIS:
                 v_0=v_0,
                 max_jump_ratio_bound=max_jump_ratio_bound,
                 variance_ratio_bound=variance_ratio_bound,
-                conservative_correction=conservative_correction
             )
         elif self.conf_seq == "finite":
             self.conf_seqs = FiniteSampleCascadeConfSeqs(
@@ -1328,51 +1389,56 @@ class ACTIS:
 
         return self.current_thresholds
 
-    def _tune_thresholds(self) -> tuple[float, float, AsymptoticValidityDiagnostics | None, AsymptoticValidityDiagnostics | None]:
+    def _tune_thresholds(self) -> tuple[
+        float,
+        float,
+        AsymptoticValidityDiagnostics | None,
+        AsymptoticValidityDiagnostics | None
+    ]:
         r"""Evaluates the test supermartingales across candidate threshold grids to find
         the optimal pair of thresholds."""
         # Forward sequential scan stopping at first failure of recall target
         k_lower = 0
         tau_lower = float(self.thresholds[0])
-
-        for k, tau in enumerate(self.thresholds):
-            if self.conf_seqs.is_recall_satisfied(k):
-                k_lower = k
-                tau_lower = float(tau)
-            else:
-                # Stop at first failure
+        diag_R = None
+        for k in range(len(self.thresholds)):
+            if not self.conf_seqs.is_recall_satisfied(k):
                 break
 
-        diag_R = self.conf_seqs.asymptotic_diag_R(k_lower)
-        if diag_R is not None and not diag_R.is_valid() and \
-            self.enable_asymptotic_protection:
-            # Safety fallback to the lowest threshold if the asymptotic validity check
-            # fails
-            k_lower = 0
-            tau_lower = float(self.thresholds[0])
+            d = None
+            if self.enable_asymptotic_protection:
+                d = self.conf_seqs.asymptotic_diag_R(k)
+                if d is not None and not d.is_valid():
+                    if k_lower == 0:
+                        diag_R = d
+                    break
+
+            k_lower = k
+            tau_lower = float(self.thresholds[k])
+            diag_R = d
 
         # Backward sequential scan stopping at first failure of precision target
         k_upper = len(self.thresholds_upper) - 1
         tau_upper = float(self.thresholds_upper[-1])
-
+        diag_P = None
         for k in range(len(self.thresholds_upper) - 1, -1, -1):
             tau_k = float(self.thresholds_upper[k])
-            if tau_k < tau_lower:
+
+            if (tau_k < tau_lower) or \
+                not self.conf_seqs.is_precision_satisfied(k, k_lower):
                 break
 
-            if self.conf_seqs.is_precision_satisfied(k, k_lower):
-                k_upper = k
-                tau_upper = tau_k
-            else:
-                # Stop at first failure
-                break
+            d = None
+            if self.enable_asymptotic_protection:
+                d = self.conf_seqs.asymptotic_diag_P(k, k_lower)
+                if d is not None and not d.is_valid():
+                    if k_upper == len(self.thresholds_upper) - 1:
+                        diag_P = d
+                    break
 
-        diag_P = self.conf_seqs.asymptotic_diag_P(k_upper, k_lower)
-        if diag_P is not None and not diag_P.is_valid() and \
-            self.enable_asymptotic_protection:
-            # Safety fallback to the highest threshold if the asymptotic validity check
-            # fails
-            tau_upper = float(self.thresholds_upper[-1])
+            k_upper = k
+            tau_upper = tau_k
+            diag_P = d
 
         return (
             tau_upper,
@@ -1401,7 +1467,6 @@ class ACTIS:
         tau_neg_opt = float(self.thresholds[opt_neg_idx])
 
         # Optimistic precision threshold via binary search
-
         start_k = int(np.searchsorted(self.thresholds_upper, tau_neg_opt, side="left"))
         low_pos, high_pos = start_k, len(self.thresholds_upper) - 1
         opt_pos_idx = len(self.thresholds_upper) - 1
@@ -1491,17 +1556,18 @@ class ACTIS:
         )
 
         num_positives = int(np.sum(self.conf_seqs.labels))
-        if self.conf_seq == "asymptotic" and self.enable_asymptotic_protection:
-            asymp_valid = False
-            if ((self.current_thresholds.asymptotic_diag_R is None or
-                self.current_thresholds.asymptotic_diag_R.is_valid()) and
-                (self.current_thresholds.asymptotic_diag_P is None or
-                self.current_thresholds.asymptotic_diag_P.is_valid())):
-                asymp_valid = True
+        # if self.conf_seq == "asymptotic" and self.enable_asymptotic_protection:
+        #     asymp_valid = False
+        #     if ((self.current_thresholds.asymptotic_diag_R is None or
+        #         self.current_thresholds.asymptotic_diag_R.is_valid()) and
+        #         (self.current_thresholds.asymptotic_diag_P is None or
+        #         self.current_thresholds.asymptotic_diag_P.is_valid())):
+        #         asymp_valid = True
 
-            warmup_needed = (not asymp_valid) or (num_positives < min_positives)
-        else:
-            warmup_needed = num_positives < min_positives
+        #     warmup_needed = (not asymp_valid) or (num_positives < min_positives)
+        # else:
+        #     warmup_needed = num_positives < min_positives
+        warmup_needed = num_positives < min_positives
 
         if N_rem == 0 or n_draws >= max_sample_size:
             diagnostics = StoppingDiagnostics(

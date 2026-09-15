@@ -45,7 +45,11 @@ if _SCALEDOC_DIR.exists():
     if str(_SCALEDOC_DIR) not in sys.path:
         sys.path.insert(0, str(_SCALEDOC_DIR))
     try:
-        from cascade import calibrate_sampling, select_sim_filterB, smooth_distr
+        from cascade import (  # ty: ignore[unresolved-import]
+            calibrate_sampling,
+            select_sim_filterB,
+            smooth_distr,
+        )
 
         _HAS_SCALEDOC = True
     except ImportError:
@@ -212,9 +216,6 @@ class ACTISRunner(BaseFilterRunner):
     """Whether to enable heuristic protection for anytime-valid FWER control when
     operating in the non-asymptotic regime."""
 
-    conservative_correction: bool = False
-    """Whether to apply a conservative correction to the significance level."""
-
     variance_ratio_bound: float = 0.05
     """Bound on the ratio of the variance of the test statistic to the variance of the
     null distribution. This is used to control the false discovery rate."""
@@ -371,7 +372,6 @@ class ACTISRunner(BaseFilterRunner):
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,
             enable_asymptotic_protection=self.enable_asymptotic_protection,
-            conservative_correction=self.conservative_correction,
             variance_ratio_bound=self.variance_ratio_bound,
             max_jump_ratio_bound=self.max_jump_ratio_bound
         )

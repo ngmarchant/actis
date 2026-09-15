@@ -30,8 +30,16 @@ class PopulationSampler:
         self.pop_size = pop_size
         self.replace = replace
         self.p = None
+        self._cdf = None
         if p is not None:
             self.p = np.asarray(p, dtype=np.float64)
+            self._cdf = np.cumsum(self.p)
+            if self._cdf[-1] <= 0.0 or not np.isfinite(self._cdf[-1]):
+                raise ValueError(
+                    "Probabilities in `p` must sum to a positive finite value."
+                )
+            self._cdf /= self._cdf[-1]
+            self._cdf[-1] = 1.0
         self.rng = rng if rng is not None else np.random.default_rng()
         self._perm_idx = None
         self._sample_count = 0
@@ -59,7 +67,12 @@ class PopulationSampler:
             return self._perm_idx[i:i+size].tolist()
 
         self._sample_count += size
-        idx = self.rng.choice(self.pop_size, size=size, replace=True, p=self.p)
+        if self._cdf is None:
+            idx = self.rng.choice(self.pop_size, size=size, replace=True)
+        else:
+            u = self.rng.random(size)
+            idx = np.searchsorted(self._cdf, u, side="right")
+            idx = np.minimum(idx, self.pop_size - 1)
         return idx.tolist()
 
     @property

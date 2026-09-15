@@ -118,18 +118,36 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
             raise ValueError("Parameter `v_0` must be positive.")
         self.v_0 = float(v_0)
         self.running_sum_sq = 0.0
+        self.x_min = float("inf")
+        self.x_max = float("-inf")
 
     def update(self, x: ArrayLike) -> None:
         x = np.asarray(x, dtype=np.float64)
+        if len(x) > 0:
+            self.x_min = min(self.x_min, float(np.min(x)))
+            self.x_max = max(self.x_max, float(np.max(x)))
         super().update(x)
         self.running_sum_sq += float(np.sum(x**2))
 
     @property
     def v_t(self) -> float:
-        r"""Empirical variance accumulator $V_t = \sum_{i=1}^t (x_i - \bar{x}_t)^2$."""
+        r"""Empirical variance accumulator
+        $V_t = \sum_{i=1}^t (x_i - \bar{x}_t)^2$.
+        """
         if self.t < 2:
             return 0.0
         return max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
+
+    @property
+    def rho_max(self) -> float:
+        r"""Maximum jump dispersion ratio
+        $\rho_{\max} = \max_i (x_i - \bar{x}_t)^2 / V_t$.
+        """
+        if self.v_t <= 0.0 or self.t == 0:
+            return 0.0
+        mean = self.running_sum / self.t
+        max_dev_sq = max((self.x_min - mean) ** 2, (self.x_max - mean) ** 2)
+        return float(max_dev_sq / self.v_t)
 
     def log_wealth(self) -> float:
         if self.t < 2:
@@ -173,7 +191,7 @@ class BettingSupermartingale(TestSupermartingale):
         self,
         m: float,
         alpha: float,
-        population_size: int | None = None,
+        pop_size: int | None = None,
         horizon: int | None = None,
         trunc_scale: float = 0.5,
         m_trunc: bool = True,
@@ -186,7 +204,7 @@ class BettingSupermartingale(TestSupermartingale):
         Args:
             m: Mean $m$ in the null hypothesis.
             alpha: Significance level in (0, 1).
-            population_size: Finite population size $N$ if sampling without replacement.
+            pop_size: Finite population size $N$ if sampling without replacement.
             horizon: Fixed sample size horizon. If None, uses anytime-valid
                 $1/\sqrt{t log t}$ scaling.
             trunc_scale: Scale factor for lambda truncation (default: 0.5).
@@ -202,7 +220,7 @@ class BettingSupermartingale(TestSupermartingale):
         """
         super().__init__(m=m, reverse=reverse)
         self.alpha = float(alpha)
-        self.population_size = population_size
+        self.pop_size = pop_size
         self.horizon = horizon
         self.trunc_scale = float(trunc_scale)
         self.m_trunc = bool(m_trunc)
@@ -238,10 +256,15 @@ class BettingSupermartingale(TestSupermartingale):
         S_t = self.S_t + np.cumsum(x)
 
         # Online running regularized mean and variance
-        mu_hat_t = np.minimum((self.fake_obs * self.prior_mean + S_t) / (t + self.fake_obs), 1.0)
+        mu_hat_t = np.minimum(
+            (self.fake_obs * self.prior_mean + S_t) / (t + self.fake_obs),
+            1.0
+        )
         sq_dev = (x - mu_hat_t) ** 2
         cum_sq_dev_t = self.cum_sq_dev + np.cumsum(sq_dev)
-        sigma2_t = (self.fake_obs * self.prior_variance + cum_sq_dev_t) / (t + self.fake_obs)
+        sigma2_t = (
+            (self.fake_obs * self.prior_variance + cum_sq_dev_t) / (t + self.fake_obs)
+        )
 
         # 1-step predictable variance
         sigma2_prev = np.empty(B, dtype=np.float64)
@@ -251,18 +274,25 @@ class BettingSupermartingale(TestSupermartingale):
 
         # Predictable bets
         if self.horizon is None:
-            raw_lambda = np.sqrt(2.0 * np.log(1.0 / self.alpha) / (t * np.log(1.0 + t) * sigma2_prev))
+            raw_lambda = np.sqrt(
+                2.0 * np.log(1.0 / self.alpha) / (t * np.log(1.0 + t) * sigma2_prev)
+            )
         else:
-            raw_lambda = np.sqrt(2.0 * np.log(1.0 / self.alpha) / (self.horizon * sigma2_prev))
+            raw_lambda = np.sqrt(
+                2.0 * np.log(1.0 / self.alpha) / (self.horizon * sigma2_prev)
+            )
         raw_lambda[~np.isfinite(raw_lambda)] = 0.0
 
-        # Conditional null mean (accounting for hypergeometric without-replacement draws if N is set)
-        if self.population_size is not None:
+        # Conditional null mean (accounting for hypergeometric without-replacement draws
+        # if N is set)
+        if self.pop_size is not None:
             S_prev = np.empty(B, dtype=np.float64)
             S_prev[0] = self.S_t
             if B > 1:
                 S_prev[1:] = S_t[:-1]
-            mu_t = (self.population_size * null_m - S_prev) / (self.population_size - (t - 1.0))
+            mu_t = (
+                (self.pop_size * null_m - S_prev) / (self.pop_size - (t - 1.0))
+            )
         else:
             mu_t = np.full(B, null_m, dtype=np.float64)
 
@@ -282,7 +312,7 @@ class BettingSupermartingale(TestSupermartingale):
         mult = 1.0 + lam * (x - mu_t)
         mult = np.maximum(mult, 0.0)
         mult[np.isnan(mult)] = 0.0
-        if self.population_size is not None:
+        if self.pop_size is not None:
             mult = np.where((mu_t < 0.0) | (mu_t > 1.0), np.inf, mult)
 
         wealth_batch = float(np.prod(mult))
@@ -300,47 +330,4 @@ class BettingSupermartingale(TestSupermartingale):
 
     def wealth(self) -> float:
         return self.current_wealth
-
-
-# def eval_asymptotic_betting_wealth(
-#     x: ArrayLike,
-#     m: float,
-#     alpha: float = 0.05,
-#     c: float = 0.5,
-#     prior_mean: float = 0.0,
-#     prior_var: float = 1.0,
-#     fake_obs: int = 1,
-# ) -> float:
-#     r"""Evaluates the terminal wealth of the asymptotic betting supermartingale
-#     of Waudby-Smith, Arbour, Sinha & Ramdas (2024)
-#     """
-#     x = np.asarray(x, dtype=np.float64)
-#     N = len(x)
-#     if N == 0:
-#         return 1.0
-
-#     diff = x - m
-#     t = np.arange(1, N + 1)
-
-#     mu_hat_t = (fake_obs * prior_mean + np.cumsum(diff)) / (t + fake_obs)
-#     mu_prev = np.append(prior_mean, mu_hat_t[:-1])
-
-#     sigma2_t = (fake_obs * prior_var + np.cumsum((diff - mu_hat_t) ** 2)) / (t + fake_obs)
-#     sigma2_prev = np.append(prior_var, sigma2_t[:-1])
-
-#     cum_max = np.maximum.accumulate(np.abs(diff))
-#     max_prev = np.append(1.0, cum_max[:-1])
-
-#     with np.errstate(divide="ignore", invalid="ignore"):
-#         raw_lambda = np.sqrt(
-#             2.0 * np.log(1.0 / alpha) / (t * np.log(1.0 + t) * sigma2_prev)
-#         )
-#         raw_lambda = np.where(mu_prev > 0.0, raw_lambda, 0.0)
-#         lambdas = np.minimum(raw_lambda, c / max_prev)
-#         lambdas = np.nan_to_num(lambdas, nan=0.0, posinf=0.0, neginf=0.0)
-
-#         multiplicands = np.maximum(1.0 + lambdas * diff, 0.0)
-#         wealth_process = np.cumprod(multiplicands)
-
-#     return float(wealth_process[-1])
 

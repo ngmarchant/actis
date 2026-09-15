@@ -132,34 +132,26 @@ To control the family-wise error rate across all $K_l$ candidate lower threshold
 M_t^{(P)}(j, i) \ge \frac{1}{\alpha_P} \quad \text{with } \alpha_P \coloneqq \frac{\delta_P}{K_l} = \frac{\delta}{2 K_l}.
 \end{equation}
 
-\subsection{Decoupled Sequential Tuning and Safety Fallbacks}
-At each tuning step $t$, ACTIS searches the candidate threshold lattice through a decoupled two-stage sequential procedure:
+\subsection{Decoupled Fixed Sequence Testing and Anytime Validity}
+At each tuning step $t$, ACTIS searches the candidate threshold lattice through a decoupled two-stage sequential testing procedure that strictly adheres to the principle of \textbf{Fixed Sequence Testing} (Maurer et al., 1995; Bauer et al., 1991):
 \begin{enumerate}[leftmargin=*]
-    \item \textbf{Stage 1 (Recall Scan and Verification)}:
-    The tuner scans forward across candidate lower thresholds $i = 1, 2, \dots, K_l$, stopping at the first threshold where the recall martingale fails to reject the null:
-    \begin{equation}
-    i^* \coloneqq \max \Big\{ i \in \{1, \dots, K_l\} : M_t^{(R)}(i) \ge \frac{1}{\delta_R} \Big\}.
+    \item \textbf{Stage 1 (Recall Sequential Testing Scan)}:
+    The lower threshold lattice $1 = \tau_{l, 1} < \tau_{l, 2} < \dots < \tau_{l, K_l}$ is specified a priori. Because Recall is monotonically non-increasing in $\tau_l$, the null hypotheses $H_0^{(R)}(i): \text{Recall}(\tau_{l, i}) < \gamma_R$ are nested. The tuner scans forward across candidate lower thresholds $i = 1, 2, \dots, K_l$, stopping at the first candidate where either the test martingale fails to reject the null or any runtime asymptotic validity diagnostic fails:
+    \begin{equation}\label{eq:fst_recall}
+    i^* \coloneqq \max \Big\{ i \in \{1, \dots, K_l\} : \forall k \le i, \; M_t^{(R)}(k) \ge \frac{1}{\delta_R} \;\land\; \mathcal{V}_R(k) = 1 \Big\},
     \end{equation}
-    The tuner then evaluates the asymptotic validity diagnostic specifically on candidate $i^*$. If the diagnostic fails and asymptotic protection is enabled, the tuner executes a safety fallback:
-    \begin{equation}\label{eq:fallback_recall}
-    i^* \leftarrow 1 \implies \tau_l = \tau_{l, 1} = 0.
-    \end{equation}
-    Because $\tau_{l, 1} = 0$ routes all items to either automated acceptance or oracle review, $\text{Recall} \equiv 1$ deterministically.
+    where $\mathcal{V}_R(k) \in \{0, 1\}$ indicates whether candidate $k$ satisfies all three runtime asymptotic validity diagnostics (variance accumulation, jump dispersion, and proposal-adjusted binomial consistency). At the anchor $i=1$ ($\tau_{l, 1} = 0$), all items are routed to automated acceptance or oracle review, ensuring $\text{Recall} \equiv 1$ deterministically, providing a guaranteed valid baseline ($\mathcal{V}_R(1) \equiv 1$). By stopping at the first non-rejection, Fixed Sequence Testing guarantees family-wise error rate control $\le \delta_R$ across all $K_l$ lower threshold candidates without Bonferroni penalties.
     
-    \item \textbf{Stage 2 (Precision Scan and Verification)}:
-    Conditioned on the certified lower threshold $i^*$, the tuner scans backward across candidate upper thresholds $j = K_u, K_u-1, \dots, 1$ (with $\tau_{u, j} \ge \tau_{l, i^*}$), stopping at the first threshold where the precision martingale fails:
-    \begin{equation}
-    j^* \coloneqq \min \Big\{ j \in \{1, \dots, K_u\} : \tau_{u, j} \ge \tau_{l, i^*} \;\land\; M_t^{(P)}(j, i^*) \ge \frac{1}{\alpha_P} \Big\}.
+    \item \textbf{Stage 2 (Precision Sequential Testing Scan)}:
+    Conditioned on the certified lower threshold $i^*$, candidate upper thresholds $\tau_{u, 1} < \tau_{u, 2} < \dots < \tau_{u, K_u} = 1$ are evaluated in backward order $j = K_u, K_u-1, \dots, 1$ (restricted to $\tau_{u, j} \ge \tau_{l, i^*}$). Because Precision is monotonically non-decreasing in $\tau_u$, scanning backward corresponds to testing an a priori ordered sequence from the conservative anchor ($\tau_{u, K_u} = 1$, where $\text{Precision} \equiv 1$ deterministically) downward toward more aggressive thresholds. The tuner stops at the first candidate where either the precision martingale fails or any asymptotic validity diagnostic fails:
+    \begin{equation}\label{eq:fst_precision}
+    j^* \coloneqq \min \Big\{ j \in \{1, \dots, K_u\} : \tau_{u, j} \ge \tau_{l, i^*} \;\land\; \forall l \ge j, \; M_t^{(P)}(l, i^*) \ge \frac{1}{\alpha_P} \;\land\; \mathcal{V}_P(l, i^*) = 1 \Big\},
     \end{equation}
-    The tuner then evaluates the asymptotic validity diagnostic on the bivariate pair $(j^*, i^*)$. If the diagnostic fails and protection is enabled, the tuner executes a safety fallback:
-    \begin{equation}\label{eq:fallback_precision}
-    j^* \leftarrow K_u \implies \tau_u = \tau_{u, K_u} = 1.
-    \end{equation}
-    Because $\tau_{u, K_u} = 1$ routes all items below 1 to the oracle, no automated positive predictions occur, guaranteeing $\text{Precision} \equiv 1$ deterministically.
+    where $\alpha_P \coloneqq \delta_P / K_l = \delta / (2 K_l)$ incorporates the Bonferroni correction over candidate lower thresholds, and $\mathcal{V}_P(l, i^*) \in \{0, 1\}$ denotes the joint validity of precision diagnostics.
 \end{enumerate}
 
-\begin{remark}[\textbf{Decoupled Verification Architecture}]\label{rem:decoupled_diag}
-Decoupling the verification of recall and precision diagnostics matches the asymmetric dependency structure of cascades: recall depends solely on $\tau_l$, whereas precision depends on both $\tau_u$ and the certified $\tau_l$. Evaluating diagnostics separately allows the tuner to fallback gracefully on recall while retaining an optimal precision threshold, or vice versa, avoiding unnecessary oracle calls while preserving anytime FWER control.
+\begin{remark}[\textbf{Decoupled Fixed Sequence Architecture}]\label{rem:decoupled_diag}
+Decoupling the sequential verification of recall and precision matches the asymmetric dependency structure of cascades: recall depends solely on $\tau_l$, whereas precision depends on both $\tau_u$ and the certified $\tau_l$. Enforcing strict Fixed Sequence Testing stopping rules at every step guarantees that the sequence never steps over an uncertified or failing candidate into the null region, ensuring non-asymptotic safety while maximizing query savings.
 \end{remark}
 
 \newpage
@@ -340,41 +332,61 @@ p_{0, P}(j, i) = \frac{(1 - \gamma_P)\eta_P(j, i)}{\gamma_P + (1 - \gamma_P)\eta
 \end{equation}
 \end{proposition}
 
-\paragraph{The Partition-Density Policy.}
-Estimating $\bar{q}_{\text{FN}}$ and $\bar{q}_{\text{TP}}$ directly using proxy probabilities $s_k$ as surrogates for unknown ground-truth labels can be numerically unstable on rare-event datasets: when positive events are sparse, proxy mass in the lower tail $\sum_{s < \tau} s_k$ can be noisy or nearly zero, causing estimated proposal ratios to collapse.
-
-To resolve this without tuning hyperparameters (such as pseudo-counts $\lambda$) or altering the quantile threshold grid, ACTIS implements the \textbf{Partition-Density Policy}.
-We partition the population $\mathcal{D}$ into geometric sets induced directly by candidate thresholds:
+\paragraph{Recall Null Failure Probability via Partition Densities.}
+For Recall, both False Negatives ($\text{FN}: Y=1, s < \tau_{l, i}$) and True Positives ($\text{TP}: Y=1, s \ge \tau_{l, i}$) belong to the \emph{same class} of positive events ($Y=1$).
+Estimating $\bar{q}_{\text{FN}}$ directly by weighting points by $s_k$ in the lower tail is unstable on rare-event datasets because proxy mass in the extreme lower tail ($\sum_{s < \tau} s_k$) can be near zero or noisy.
+However, because both FN and TP share the positive class, ACTIS partitions the population into geometric sets induced directly by candidate lower thresholds:
 \begin{align}
 \text{Dropped partition at } \tau_{l, i}: \quad & \mathcal{D}(\tau_{l, i}) \coloneqq \{k \in \{1, \dots, N\} : s(x_k) < \tau_{l, i}\}, \\
-\text{Retained partition at } \tau_{l, i}: \quad & \mathcal{R}(\tau_{l, i}) \coloneqq \{k \in \{1, \dots, N\} : s(x_k) \ge \tau_{l, i}\}, \\
-\text{Automated partition at } \tau_{u, j}: \quad & \mathcal{U}(\tau_{u, j}) \coloneqq \{k \in \{1, \dots, N\} : s(x_k) \ge \tau_{u, j}\}.
+\text{Retained partition at } \tau_{l, i}: \quad & \mathcal{R}(\tau_{l, i}) \coloneqq \{k \in \{1, \dots, N\} : s(x_k) \ge \tau_{l, i}\}.
 \end{align}
+Let $N_{< \tau_{l, i}} = |\mathcal{D}(\tau_{l, i})|$ and $N_{\ge \tau_{l, i}} = |\mathcal{R}(\tau_{l, i})|$, with proposal masses $Q_{< \tau_{l, i}} = \sum_{k \in \mathcal{D}(\tau_{l, i})} q(x_k)$ and $Q_{\ge \tau_{l, i}} = \sum_{k \in \mathcal{R}(\tau_{l, i})} q(x_k)$.
 
-Let $N_{< \tau_{l, i}} = |\mathcal{D}(\tau_{l, i})|$, $N_{\ge \tau_{l, i}} = |\mathcal{R}(\tau_{l, i})|$, and $N_{\ge \tau_{u, j}} = |\mathcal{U}(\tau_{u, j})|$ denote partition cardinalities.
-Let $Q_{< \tau_{l, i}} = \sum_{k \in \mathcal{D}(\tau_{l, i})} q(x_k)$, $Q_{\ge \tau_{l, i}} = \sum_{k \in \mathcal{R}(\tau_{l, i})} q(x_k)$, and $Q_{\ge \tau_{u, j}} = \sum_{k \in \mathcal{U}(\tau_{u, j})} q(x_k)$ denote total proposal masses.
-
-\begin{definition}[\textbf{Partition-Average Proposal Densities}]\label{def:partition_densities}
-The average proposal sampling densities over candidate partitions are:
+\begin{definition}[\textbf{Partition-Average Recall Densities}]\label{def:partition_densities}
+The average proposal sampling densities over candidate recall partitions are:
 \begin{align}
 \bar{q}_{< \tau_{l, i}} &\coloneqq \begin{cases} \frac{Q_{< \tau_{l, i}}}{N_{< \tau_{l, i}}}, & N_{< \tau_{l, i}} > 0 \\ \frac{1}{N}, & N_{< \tau_{l, i}} = 0 \end{cases}, \qquad
-\bar{q}_{\ge \tau_{l, i}} \coloneqq \begin{cases} \frac{Q_{\ge \tau_{l, i}}}{N_{\ge \tau_{l, i}}}, & N_{\ge \tau_{l, i}} > 0 \\ \frac{1}{N}, & N_{\ge \tau_{l, i}} = 0 \end{cases}, \\
-\bar{q}_{\ge \tau_{u, j}} &\coloneqq \begin{cases} \frac{Q_{\ge \tau_{u, j}}}{N_{\ge \tau_{u, j}}}, & N_{\ge \tau_{u, j}} > 0 \\ \frac{1}{N}, & N_{\ge \tau_{u, j}} = 0 \end{cases}.
+\bar{q}_{\ge \tau_{l, i}} \coloneqq \begin{cases} \frac{Q_{\ge \tau_{l, i}}}{N_{\ge \tau_{l, i}}}, & N_{\ge \tau_{l, i}} > 0 \\ \frac{1}{N}, & N_{\ge \tau_{l, i}} = 0 \end{cases}.
 \end{align}
 \end{definition}
 
-The partition proposal ratios and proposal-adjusted null failure probabilities are:
+The partition proposal ratio and proposal-adjusted null failure probability for recall are:
 \begin{align}
 \hat{\eta}_R(i) &\coloneqq \min\left(1, \; \frac{\bar{q}_{< \tau_{l, i}}}{\bar{q}_{\ge \tau_{l, i}}}\right), \label{eq:eta_R_def} \\
-p_{0, R}(i) &\coloneqq \min\left(1 - \gamma_R, \; \frac{(1 - \gamma_R)\hat{\eta}_R(i)}{\gamma_R + (1 - \gamma_R)\hat{\eta}_R(i)}\right), \label{eq:p0_R_def} \\
-\hat{\eta}_P(j, i) &\coloneqq \min\left(1, \; \frac{\bar{q}_{\ge \tau_{u, j}}}{\bar{q}_{\ge \tau_{l, i}}}\right), \label{eq:eta_P_def} \\
-p_{0, P}(j, i) &\coloneqq \min\left(1 - \gamma_P, \; \frac{(1 - \gamma_P)\hat{\eta}_P(j, i)}{\gamma_P + (1 - \gamma_P)\hat{\eta}_P(j, i)}\right). \label{eq:p0_P_def}
+p_{0, R}(i) &\coloneqq \min\left(1 - \gamma_R, \; \frac{(1 - \gamma_R)\hat{\eta}_R(i)}{\gamma_R + (1 - \gamma_R)\hat{\eta}_R(i)}\right). \label{eq:p0_R_def}
+\end{align}
+
+\paragraph{Precision Null Failure Probability via Proxy-Weighted Expectations and Geometric Floor.}
+For Precision, candidate positive predictions consist of automated False Positives ($\text{FP}: Y=0, s \ge \tau_{u, j}$) and confirmed True Positives ($\text{TP}: Y=1, s \ge \tau_{l, i}$).
+Unlike recall, FP and TP belong to \emph{different} ground-truth classes: FPs are negative ($Y=0$) while TPs are positive ($Y=1$).
+Because importance proposals $q(x)$ deliberately oversample positives relative to negatives, True Positives receive substantially higher proposal sampling density than False Positives ($\bar{q}_{\text{TP}} \gg \bar{q}_{\text{FP}}$).
+Evaluating $\eta_P$ via unweighted partition densities $\bar{q}_{\ge \tau_u} / \bar{q}_{\ge \tau_l}$ fails because in rare-event datasets (where negatives comprise $>98\%$ of the population), both unweighted partitions are overwhelmingly negative-dominated, completely masking the proposal oversampling of positives and falsely forcing $\hat{\eta}_P \approx 1$.
+
+To resolve this asymmetry, ACTIS evaluates the expected proposal densities of false positives and true positives using proxy weights:
+\begin{equation}
+\bar{q}_{\text{FP}, \text{proxy}}(\tau_{u, j}) \coloneqq \frac{\sum_{k: s(x_k) \ge \tau_{u, j}} q(x_k)(1 - s_k)}{\sum_{k: s(x_k) \ge \tau_{u, j}} (1 - s_k)}, \qquad
+\bar{q}_{\text{TP}, \text{proxy}}(\tau_{l, i}) \coloneqq \frac{\sum_{k: s(x_k) \ge \tau_{l, i}} q(x_k) s_k}{\sum_{k: s(x_k) \ge \tau_{l, i}} s_k}.
+\end{equation}
+The proxy-weighted precision proposal ratio is:
+\begin{equation}
+\hat{\eta}_{P, \text{proxy}}(j, i) \coloneqq \frac{\bar{q}_{\text{FP}, \text{proxy}}(\tau_{u, j})}{\bar{q}_{\text{TP}, \text{proxy}}(\tau_{l, i})}.
+\end{equation}
+
+To guard unconditionally against arbitrary proposal shifts, non-monotonic proposals, or proxy miscalibration, $\eta_P$ is bounded by the unconditional \emph{geometric worst-case bounds} across the active partitions:
+\begin{equation}
+\hat{\eta}_{P, \min}(j, i) \coloneqq \frac{\min_{k: s(x_k) \ge \tau_{u, j}} q(x_k)}{\max_{k: s(x_k) \ge \tau_{l, i}} q(x_k)}, \qquad
+\hat{\eta}_{P, \max}(j, i) \coloneqq \frac{\max_{k: s(x_k) \ge \tau_{u, j}} q(x_k)}{\min_{k: s(x_k) \ge \tau_{l, i}} q(x_k)}.
+\end{equation}
+The effective bivariate precision ratio and proposal-adjusted null failure probability are:
+\begin{align}
+\hat{\eta}_P(j, i) &\coloneqq \mathrm{clip}\left(\hat{\eta}_{P, \text{proxy}}(j, i), \; \hat{\eta}_{P, \min}(j, i), \; \hat{\eta}_{P, \max}(j, i)\right), \label{eq:eta_P_def} \\
+p_{0, P}(j, i) &\coloneqq \frac{(1 - \gamma_P)\hat{\eta}_P(j, i)}{\gamma_P + (1 - \gamma_P)\hat{\eta}_P(j, i)}. \label{eq:p0_P_def}
 \end{align}
 
 \begin{proposition}[\textbf{Uniform Sampling Invariance}]\label{prop:uniform_invariance}
 If sampling is uniform ($q(x_k) = 1/N$ for all $k$), then for all candidate threshold indices $i, j$:
 \begin{equation}
-\bar{q}_{< \tau_{l, i}} = \bar{q}_{\ge \tau_{l, i}} = \bar{q}_{\ge \tau_{u, j}} = \frac{1}{N}.
+\bar{q}_{< \tau_{l, i}} = \bar{q}_{\ge \tau_{l, i}} = \frac{1}{N}, \qquad \bar{q}_{\text{FP}, \text{proxy}}(\tau_{u, j}) = \bar{q}_{\text{TP}, \text{proxy}}(\tau_{l, i}) = \frac{1}{N}, \qquad \hat{\eta}_{P, \min}(j, i) = \hat{\eta}_{P, \max}(j, i) = 1.
 \end{equation}
 Consequently, $\hat{\eta}_R(i) = 1$ and $\hat{\eta}_P(j, i) = 1$, which recovers the uniform Bernoulli null failure probabilities:
 \begin{equation}
@@ -383,8 +395,9 @@ p_{0, R}(i) = 1 - \gamma_R, \qquad p_{0, P}(j, i) = 1 - \gamma_P.
 \end{proposition}
 
 \begin{proof}
-When $q(x_k) = 1/N$, the total proposal mass of any subset $\mathcal{A} \subseteq \mathcal{D}$ is $Q_{\mathcal{A}} = |\mathcal{A}| / N$. Therefore, the average sampling density is $\bar{q}_{\mathcal{A}} = Q_{\mathcal{A}} / |\mathcal{A}| = (|\mathcal{A}|/N)/|\mathcal{A}| = 1/N$. Substituting $\bar{q} = 1/N$ into Equations~\eqref{eq:eta_R_def}--\eqref{eq:p0_P_def} immediately yields $\hat{\eta}_R = 1, \hat{\eta}_P = 1$, $p_{0, R} = 1 - \gamma_R$, and $p_{0, P} = 1 - \gamma_P$.
+When $q(x_k) = 1/N$, the total proposal mass of any subset $\mathcal{A} \subseteq \mathcal{D}$ is $Q_{\mathcal{A}} = |\mathcal{A}| / N$. Therefore, the average sampling density is $\bar{q}_{\mathcal{A}} = Q_{\mathcal{A}} / |\mathcal{A}| = 1/N$. Similarly, $\sum_{k} q(x_k) w_k / \sum_k w_k = (1/N) \sum_k w_k / \sum_k w_k = 1/N$, and $\min q / \max q = \max q / \min q = 1$. Substituting $\bar{q} = 1/N$, $\hat{\eta}_{P, \min} = 1$, and $\hat{\eta}_{P, \max} = 1$ into Equations~\eqref{eq:eta_R_def}--\eqref{eq:p0_P_def} immediately yields $\hat{\eta}_R = 1, \hat{\eta}_P = 1$, $p_{0, R} = 1 - \gamma_R$, and $p_{0, P} = 1 - \gamma_P$.
 \end{proof}
+
 
 \begin{proposition}[\textbf{Defensive Lower Bound for Conservative Thresholds}]\label{prop:defensive_lower_bound}
 Suppose the proposal distribution includes a defensive uniform mixture with weight $\alpha \in (0, 1)$ such that $q(x_k) \ge \alpha / N$ for all $k$. Then for conservative candidate lower thresholds ($\tau_{l, i} \to 0$):
@@ -590,7 +603,7 @@ Evaluating the Partition-Density Policy and asymptotic diagnostics adds zero obs
 \begin{enumerate}[leftmargin=*]
     \item \textbf{Initialization ($O(N \log N)$ sort)}: Proxy scores $s(x_k)$ and proposal weights $q(x_k)$ are sorted once during tuner initialization. The cumulative proposal mass array $\text{cum\_q}[k] = \sum_{m=1}^k q_{(m)}$ is constructed in $O(N)$ time.
     \item \textbf{Grid Indexing ($O(K \log N)$)}: Threshold grid indices \texttt{idx\_lower} and \texttt{idx\_upper} are located via binary search in $O(K \log N)$ operations.
-    \item \textbf{Runtime Diagnostic Query ($O(1)$)}: At each evaluation step $t$, partition densities $\bar{q}_{< \tau_l}$, $\bar{q}_{\ge \tau_l}$, and $\bar{q}_{\ge \tau_u}$ are retrieved in $O(1)$ time via array lookups into $\text{cum\_q}$. The 2D matrix $\eta_P(j, i)$ is evaluated via vectorized NumPy outer broadcasting.
+    \item \textbf{Runtime Diagnostic Query ($O(1)$)}: At each evaluation step $t$, recall partition densities and precision proxy-weighted expectations are retrieved in $O(1)$ time via array lookups into precomputed cumulative arrays. The 2D matrix $\eta_P(j, i)$ is evaluated via vectorized NumPy outer broadcasting.
 \end{enumerate}
 
 \subsection{Operational Summary}

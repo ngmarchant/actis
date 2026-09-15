@@ -95,7 +95,10 @@ def parse_args():
         "--sample-size",
         type=parse_sample_size,
         default="auto",
-        help="ACTIS initial sample size: positive integer count or 'auto' (default: 'auto')",
+        help=(
+            "ACTIS initial sample size: positive integer count or 'auto' "
+            "(default: 'auto')"
+        )
     )
     parser.add_argument(
         "--batch-size",
@@ -187,7 +190,10 @@ def parse_args():
         "--min-positives",
         type=parse_min_positives,
         default="auto",
-        help="Minimum number of positive labels before adaptive stopping (default: 'auto')",
+        help=(
+            "Minimum number of positive labels before adaptive stopping "
+            "(default: 'auto')"
+        )
     )
     parser.add_argument(
         "--v0",
@@ -199,15 +205,10 @@ def parse_args():
         "--enable-asymptotic-protection",
         action=BooleanOptionalAction,
         default=True,
-        help="Whether to enable heuristic protection for anytime-valid FWER control when "
-        "operating in the non-asymptotic regime (default: True)",
-    )
-    parser.add_argument(
-        "--conservative-correction",
-        action=BooleanOptionalAction,
-        default=False,
-        help="Whether to apply a conservative correction to the binomial null failure "
-        "probability for the precision supermartingale (default: False)",
+        help=(
+            "Whether to enable heuristic protection for anytime-valid FWER control "
+            "when operating in the non-asymptotic regime (default: True)"
+        )
     )
     parser.add_argument(
         "--variance-ratio-bound",
@@ -291,7 +292,6 @@ def main():
             max_sample_size=args.max_sample_size,
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
-            conservative_correction=args.conservative_correction,
             variance_ratio_bound=args.variance_ratio_bound,
             max_jump_ratio_bound=args.max_jump_ratio_bound
         ),
@@ -309,7 +309,6 @@ def main():
             max_sample_size=args.max_sample_size,
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
-            conservative_correction=args.conservative_correction,
             variance_ratio_bound=args.variance_ratio_bound,
             max_jump_ratio_bound=args.max_jump_ratio_bound
         ),
