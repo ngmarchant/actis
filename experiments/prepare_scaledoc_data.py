@@ -127,6 +127,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum concurrent async API requests (default: 10)",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature for models (default: 0.0 for greedy decoding)",
+    )
+    parser.add_argument(
         "--format",
         type=str,
         default="parquet",
@@ -541,11 +547,13 @@ def main() -> int:
         print("Auto-detected and loaded 'config.yaml' from current directory.")
 
     # Initialize models
+    litellm_kwargs = {"temperature": args.temperature}
     oracle = None
     if not args.skip_oracle:
         oracle = LiteLLMOracle(
             model=args.oracle_model,
             max_concurrency=args.concurrency,
+            litellm_kwargs=litellm_kwargs,
             config=config_path,
         )
 
@@ -554,6 +562,7 @@ def main() -> int:
         proxy = LiteLLMProxy(
             model=args.proxy_model,
             max_concurrency=args.concurrency,
+            litellm_kwargs=litellm_kwargs,
             config=config_path,
         )
 

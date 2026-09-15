@@ -27,6 +27,9 @@ from litellm.types.llms.openai import (
 )
 from scipy.special import expit, logsumexp
 
+# Automatically drop parameters unsupported by specific models/providers
+litellm.drop_params = True
+
 ConfigType = (
     str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
 )

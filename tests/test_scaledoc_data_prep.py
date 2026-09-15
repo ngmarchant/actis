@@ -82,21 +82,21 @@ Safe for use.
 def test_load_scaledoc_queries():
     queries = load_scaledoc_queries("pubmed")
     assert len(queries) == 26
-    assert queries[0]["q_id"] == '0'
+    assert queries[0]["q_id"] == "0"
     assert "query" in queries[0]
     assert queries[20]["q_id"] == "0_ext"
     assert queries[25]["q_id"] == "5_ext"
 
     bp_queries = load_scaledoc_queries("big_patent")
     assert len(bp_queries) == 25
-    assert bp_queries[0]["q_id"] == '0'
+    assert bp_queries[0]["q_id"] == "0"
     assert bp_queries[20]["q_id"] == "0_ext"
     assert bp_queries[24]["q_id"] == "4_ext"
 
     gr_queries = load_scaledoc_queries("gov_report")
     assert len(gr_queries) == 20
-    assert gr_queries[0]["q_id"] == '0'
-    assert gr_queries[19]["q_id"] == '19'
+    assert gr_queries[0]["q_id"] == "0"
+    assert gr_queries[19]["q_id"] == "19"
 
 
 def test_cost_estimate_summary():
@@ -115,10 +115,12 @@ def test_cost_estimate_summary():
 
 
 def test_callable_oracle_and_proxy():
-    ds = Dataset.from_dict({
-        "id": [0, 1, 2],
-        "content": ["apple", "banana", "cherry"],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1, 2],
+            "content": ["apple", "banana", "cherry"],
+        }
+    )
 
     def mock_oracle_fn(items, query):
         return ["a" in item for item in items]
@@ -146,10 +148,12 @@ def test_callable_oracle_and_proxy():
 
 
 def test_add_model_output_generic():
-    ds = Dataset.from_dict({
-        "id": [0, 1],
-        "content": ["foo", "bar"],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1],
+            "content": ["foo", "bar"],
+        }
+    )
 
     def custom_processor(items, query):
         return [f"{query}:{item}" for item in items]
@@ -181,6 +185,7 @@ def test_litellm_oracle_mocked():
         out = oracle.predict(["doc 1", "doc 2"], "query?")
         assert isinstance(out, OracleOutput)
         assert out.labels == [True, False]
+        assert out.costs is not None
         assert len(out.costs) == 2
         assert out.costs[0]["input_tokens"] == 10
         assert out.costs[1]["input_tokens"] == 12
@@ -224,10 +229,12 @@ def test_checkpoint_resumption(tmp_path):
         call_count += len(items)
         return [False for _ in items]
 
-    ds = Dataset.from_dict({
-        "id": [0, 1, 2],
-        "content": ["d0", "d1", "d2"],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1, 2],
+            "content": ["d0", "d1", "d2"],
+        }
+    )
 
     ds = add_oracle_labels(
         dataset=ds,
@@ -245,15 +252,17 @@ def test_checkpoint_resumption(tmp_path):
 
 def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     data_file = tmp_path / "q0.parquet"
-    ds = Dataset.from_dict({
-        "id": [0, 1, 2, 3],
-        "content": ["text0", "text1", "text2", "text3"],
-        "label": [True, False, True, False],
-        "proxy_score": [0.9, 0.1, 0.8, 0.2],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1, 2, 3],
+            "content": ["text0", "text1", "text2", "text3"],
+            "label": [True, False, True, False],
+            "proxy_score": [0.9, 0.1, 0.8, 0.2],
+        }
+    )
     save_dataset(ds, data_file, format="parquet")
 
-    scenario = ScaleDocPubMed(query_id='0', data_path=data_file)
+    scenario = ScaleDocPubMed(query_id="0", data_path=data_file)
     scores, labels = scenario.generate_population()
 
     assert np.allclose(scores, [0.9, 0.1, 0.8, 0.2])
@@ -263,21 +272,23 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     dynamic_sc = SCENARIOS["scaledoc_pubmed_q0"]
     assert isinstance(dynamic_sc, ScaleDocDataset)
     assert dynamic_sc.dataset_name == "pubmed"
-    assert dynamic_sc.query_id == '0'
+    assert dynamic_sc.query_id == "0"
 
     dynamic_sc5 = SCENARIOS["scaledoc_gov_report_q5"]
     assert isinstance(dynamic_sc5, ScaleDocDataset)
     assert dynamic_sc5.dataset_name == "gov_report"
-    assert dynamic_sc5.query_id == '5'
+    assert dynamic_sc5.query_id == "5"
 
 
 def test_read_dataframe_hf_disk(tmp_path):
     hf_dir = tmp_path / "saved_hf_dataset"
-    ds = Dataset.from_dict({
-        "id": [1, 2],
-        "label": [True, False],
-        "proxy_score": [0.8, 0.3],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [1, 2],
+            "label": [True, False],
+            "proxy_score": [0.8, 0.3],
+        }
+    )
     ds.save_to_disk(str(hf_dir))
 
     df = _read_dataframe(hf_dir)
@@ -342,9 +353,9 @@ def test_dotenv_loading(tmp_path):
 
 
 def test_load_scaledoc_queries_url(tmp_path):
-    mock_json = json.dumps({
-        "custom_ds": [{"q_id": 0, "query": "Custom query?"}]
-    }).encode("utf-8")
+    mock_json = json.dumps(
+        {"custom_ds": [{"q_id": 0, "query": "Custom query?"}]}
+    ).encode("utf-8")
 
     mock_resp = MagicMock()
     mock_resp.read.return_value = mock_json
@@ -365,7 +376,7 @@ def test_load_scaledoc_queries_url(tmp_path):
             cache_dir=tmp_path / "cache",
         )
         assert len(queries2) == 1
-        assert queries2[0]["q_id"] == '0'
+        assert queries2[0]["q_id"] == "0"
         assert (tmp_path / "cache" / "query.json").exists()
 
 
@@ -397,10 +408,7 @@ def test_config_yaml_custom_rates_and_oracle(tmp_path):
 
     # Test cost estimation uses custom regional rate from router
     est = oracle.estimate_cost(["test document text"], "query?")
-    expected_cost = (
-        est.prompt_tokens * 0.0000050
-        + est.completion_tokens * 0.0000200
-    )
+    expected_cost = est.prompt_tokens * 0.0000050 + est.completion_tokens * 0.0000200
     assert est.estimated_cost == pytest.approx(expected_cost, rel=1e-5)
 
     # Test initialization with dict
@@ -425,8 +433,7 @@ def test_config_yaml_custom_rates_and_oracle(tmp_path):
     assert proxy.router is not None
     est_proxy = proxy.estimate_cost(["test document text"], "query?")
     expected_proxy_cost = (
-        est_proxy.prompt_tokens * 0.0000030
-        + est_proxy.completion_tokens * 0.0000150
+        est_proxy.prompt_tokens * 0.0000030 + est_proxy.completion_tokens * 0.0000150
     )
     assert est_proxy.estimated_cost == pytest.approx(expected_proxy_cost, rel=1e-5)
 
@@ -467,6 +474,7 @@ def test_oracle_router_acompletion_call(tmp_path):
     out = oracle.predict(["doc 1"], "is valid?")
     assert isinstance(out, OracleOutput)
     assert out.labels == [True]
+    assert out.costs is not None
     assert len(out.costs) == 1
     assert out.costs[0]["input_tokens"] == 5
     assert oracle.router.acompletion.await_count == 1
@@ -475,10 +483,12 @@ def test_oracle_router_acompletion_call(tmp_path):
 def test_multi_phase_workflow_and_reuse(tmp_path):
     from experiments.prepare_scaledoc_data import load_query_dataset
 
-    base_ds = Dataset.from_dict({
-        "id": ["doc1", "doc2"],
-        "content": ["Text 1", "Text 2"],
-    })
+    base_ds = Dataset.from_dict(
+        {
+            "id": ["doc1", "doc2"],
+            "content": ["Text 1", "Text 2"],
+        }
+    )
 
     target_file = tmp_path / "q0.parquet"
 
@@ -492,9 +502,7 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
             {"monetary": 0.002, "input_tokens": 20},
         ],
     )
-    mock_oracle.estimate_cost.return_value = CostEstimate(
-        2, 20, 2, 22, 0.001, "m"
-    )
+    mock_oracle.estimate_cost.return_value = CostEstimate(2, 20, 2, 22, 0.001, "m")
 
     ds_with_oracle = add_oracle_labels(
         base_ds,
@@ -527,9 +535,7 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
             {"monetary": 0.0001, "input_tokens": 5},
         ],
     )
-    mock_proxy.estimate_cost.return_value = CostEstimate(
-        2, 20, 2, 22, 0.001, "m"
-    )
+    mock_proxy.estimate_cost.return_value = CostEstimate(2, 20, 2, 22, 0.001, "m")
 
     ds_with_both = add_proxy_scores(
         loaded,
@@ -539,7 +545,8 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
     )
     save_dataset(ds_with_both, target_file, format="parquet")
 
-    # Verify target file now contains BOTH label, oracle_score, oracle_cost, proxy_score, proxy_cost
+    # Verify target file now contains BOTH label, oracle_score,
+    # oracle_cost, proxy_score, proxy_cost
     final_ds = load_query_dataset(target_file, format="parquet")
     assert final_ds is not None
     assert final_ds.column_names == [
@@ -560,28 +567,34 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
 def test_create_execution_plan_and_summary(tmp_path):
     from experiments.prepare_scaledoc_data import create_execution_plan
 
-    base_ds = Dataset.from_dict({
-        "id": ["d1", "d2"],
-        "content": ["Text 1", "Text 2"],
-    })
+    base_ds = Dataset.from_dict(
+        {
+            "id": ["d1", "d2"],
+            "content": ["Text 1", "Text 2"],
+        }
+    )
 
     # Prepare q0.parquet with label already present
     q0_file = tmp_path / "q0.parquet"
-    ds_q0 = Dataset.from_dict({
-        "id": ["d1", "d2"],
-        "content": ["Text 1", "Text 2"],
-        "label": [True, False],
-    })
+    ds_q0 = Dataset.from_dict(
+        {
+            "id": ["d1", "d2"],
+            "content": ["Text 1", "Text 2"],
+            "label": [True, False],
+        }
+    )
     save_dataset(ds_q0, q0_file, format="parquet")
 
     # Prepare q1.parquet with both label and proxy_score present
     q1_file = tmp_path / "q1.parquet"
-    ds_q1 = Dataset.from_dict({
-        "id": ["d1", "d2"],
-        "content": ["Text 1", "Text 2"],
-        "label": [True, True],
-        "proxy_score": [0.9, 0.8],
-    })
+    ds_q1 = Dataset.from_dict(
+        {
+            "id": ["d1", "d2"],
+            "content": ["Text 1", "Text 2"],
+            "label": [True, True],
+            "proxy_score": [0.9, 0.8],
+        }
+    )
     save_dataset(ds_q1, q1_file, format="parquet")
 
     # q2 does not exist yet
@@ -609,13 +622,13 @@ def test_create_execution_plan_and_summary(tmp_path):
     )
 
     query_map = {
-        '0': "Query 0 text",
-        '1': "Query 1 text",
-        '2': "Query 2 text",
+        "0": "Query 0 text",
+        "1": "Query 1 text",
+        "2": "Query 2 text",
     }
 
     plan = create_execution_plan(
-        selected_qids=['0', '1', '2'],
+        selected_qids=["0", "1", "2"],
         query_map=query_map,
         base_docs=base_ds,
         output_dir=tmp_path,
@@ -647,7 +660,7 @@ def test_create_execution_plan_and_summary(tmp_path):
 
     # Totals
     assert plan.total_oracle_queries == 1  # Only query 2
-    assert plan.total_proxy_queries == 2   # Queries 0 and 2
+    assert plan.total_proxy_queries == 2  # Queries 0 and 2
     assert plan.total_oracle_cost == pytest.approx(0.01)
     assert plan.total_proxy_cost == pytest.approx(0.01)
     assert plan.grand_total_cost == pytest.approx(0.02)
@@ -691,25 +704,27 @@ def test_callable_oracle_and_proxy_costs():
 
 def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
     q_file = tmp_path / "q0.parquet"
-    ds = Dataset.from_dict({
-        "id": [0, 1, 2],
-        "content": ["a", "b", "c"],
-        "label": [True, False, True],
-        "proxy_score": [0.8, 0.2, 0.9],
-        "oracle_cost": [
-            {"monetary": 0.005, "input_tokens": 100},
-            {"monetary": 0.003, "input_tokens": 60},
-            {"monetary": 0.008, "input_tokens": 160},
-        ],
-        "proxy_cost": [
-            {"monetary": 0.0001, "latency_ms": 5.0},
-            {"monetary": 0.0001, "latency_ms": 4.8},
-            {"monetary": 0.0001, "latency_ms": 5.2},
-        ],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1, 2],
+            "content": ["a", "b", "c"],
+            "label": [True, False, True],
+            "proxy_score": [0.8, 0.2, 0.9],
+            "oracle_cost": [
+                {"monetary": 0.005, "input_tokens": 100},
+                {"monetary": 0.003, "input_tokens": 60},
+                {"monetary": 0.008, "input_tokens": 160},
+            ],
+            "proxy_cost": [
+                {"monetary": 0.0001, "latency_ms": 5.0},
+                {"monetary": 0.0001, "latency_ms": 4.8},
+                {"monetary": 0.0001, "latency_ms": 5.2},
+            ],
+        }
+    )
     save_dataset(ds, q_file, format="parquet")
 
-    sc = ScaleDocPubMed(query_id='0', data_path=q_file)
+    sc = ScaleDocPubMed(query_id="0", data_path=q_file)
     df = sc.get_dataframe()
     assert len(df) == 3
     assert "oracle_cost" in df.columns
@@ -730,18 +745,22 @@ def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
 def test_create_execution_plan_with_ext_queries(tmp_path):
     from experiments.prepare_scaledoc_data import create_execution_plan
 
-    base_ds = Dataset.from_dict({
-        "id": ["d1", "d2"],
-        "content": ["Text 1", "Text 2"],
-    })
+    base_ds = Dataset.from_dict(
+        {
+            "id": ["d1", "d2"],
+            "content": ["Text 1", "Text 2"],
+        }
+    )
 
     # Pre-populate q0_ext.parquet with label
     q0_ext_file = tmp_path / "q0_ext.parquet"
-    ds_ext = Dataset.from_dict({
-        "id": ["d1", "d2"],
-        "content": ["Text 1", "Text 2"],
-        "label": [True, False],
-    })
+    ds_ext = Dataset.from_dict(
+        {
+            "id": ["d1", "d2"],
+            "content": ["Text 1", "Text 2"],
+            "label": [True, False],
+        }
+    )
     save_dataset(ds_ext, q0_ext_file, format="parquet")
 
     mock_oracle = MagicMock(spec=BaseOracle)
@@ -798,13 +817,17 @@ def test_scenarios_registry_with_ext_queries():
     assert sc_pub_ext.dataset_name == "pubmed"
     assert sc_pub_ext.query_id == "0_ext"
     assert sc_pub_ext.name == "scaledoc_pubmed_q0_ext"
-    assert str(sc_pub_ext.data_path).endswith("experiments/data/scaledoc/pubmed/q0_ext.parquet")
+    assert str(sc_pub_ext.data_path).endswith(
+        "experiments/data/scaledoc/pubmed/q0_ext.parquet"
+    )
 
     sc_bp_ext = SCENARIOS["scaledoc_big_patent_q4_ext"]
     assert sc_bp_ext.dataset_name == "big_patent"
     assert sc_bp_ext.query_id == "4_ext"
     assert sc_bp_ext.name == "scaledoc_big_patent_q4_ext"
-    assert str(sc_bp_ext.data_path).endswith("experiments/data/scaledoc/big_patent/q4_ext.parquet")
+    assert str(sc_bp_ext.data_path).endswith(
+        "experiments/data/scaledoc/big_patent/q4_ext.parquet"
+    )
 
 
 def test_oracle_output_dataclass():
@@ -826,11 +849,13 @@ def test_oracle_output_dataclass():
 
 
 def test_extract_binary_probability_custom_labels_and_logsumexp():
-    # Mock choice with logprobs for multiple positive tokens ('True', ' True') and negative ('False')
+    # Mock choice with logprobs for multiple positive tokens ('True', ' True') and
+    # negative ('False')
     # Let lp('True') = -0.5, lp(' True') = -1.2, lp('False') = -0.8
-    # pos_lse = log(exp(-0.5) + exp(-1.2)) = log(0.6065 + 0.3012) = log(0.9077) = -0.0968
+    # pos_lse = log(exp(-0.5) + exp(-1.2)) = log(0.6065 + 0.3012) = -0.0968
     # neg_lse = -0.8
-    # expected sigmoid(pos_lse - neg_lse) = sigmoid(-0.0968 - (-0.8)) = sigmoid(0.7032) = 1 / (1 + exp(-0.7032)) ≈ 0.6689
+    # expected sigmoid(pos_lse - neg_lse) = sigmoid(-0.0968 - (-0.8)) = sigmoid(0.7032)
+    # = 1 / (1 + exp(-0.7032)) ≈ 0.6689
     mock_choice = MagicMock()
     mock_choice.message.content = "True"
     top_lp1 = MagicMock(token="True", logprob=-0.5)
@@ -878,10 +903,12 @@ def test_system_prompt_label_slots():
 
 
 def test_add_oracle_labels_with_oracle_score():
-    ds = Dataset.from_dict({
-        "id": [0, 1],
-        "content": ["doc A", "doc B"],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [0, 1],
+            "content": ["doc A", "doc B"],
+        }
+    )
 
     mock_oracle = MagicMock(spec=BaseOracle)
     mock_oracle.predict.return_value = OracleOutput(
@@ -905,3 +932,55 @@ def test_add_oracle_labels_with_oracle_score():
     assert result_ds["label"] == [True, False]
     assert result_ds["oracle_score"] == pytest.approx([0.92, 0.08])
     assert result_ds["oracle_cost"] == [{"monetary": 0.001}, {"monetary": 0.001}]
+
+
+def test_litellm_drop_params_and_temperature_in_kwargs():
+    import litellm
+
+    from experiments.data_prep.models import LiteLLMOracle
+
+    assert litellm.drop_params is True
+
+    # Test that litellm_kwargs with temperature is accepted and stored
+    oracle = LiteLLMOracle(model="gpt-4o", litellm_kwargs={"temperature": 0.0})
+    assert oracle.litellm_kwargs == {"temperature": 0.0}
+
+
+def test_litellm_temperature_passed_via_litellm_kwargs():
+    import litellm
+
+    oracle = LiteLLMOracle(
+        model="azure/gpt-4o",
+        litellm_kwargs={"temperature": 0.0},
+    )
+    mock_resp = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message = MagicMock(content="Yes")
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage = MagicMock(prompt_tokens=5, completion_tokens=1)
+
+    with patch.object(
+        litellm, "acompletion", new_callable=AsyncMock
+    ) as mock_acompletion:
+        mock_acompletion.return_value = mock_resp
+        oracle.predict(["doc 1"], "query?")
+        assert mock_acompletion.call_count == 1
+        call_kwargs = mock_acompletion.call_args[1]
+        assert call_kwargs.get("temperature") == 0.0
+
+
+def test_prepare_scaledoc_cli_temperature_arg():
+    import sys
+
+    from experiments.prepare_scaledoc_data import parse_args
+
+    test_args = [
+        "prepare_scaledoc_data.py",
+        "--dataset",
+        "pubmed",
+        "--temperature",
+        "0.0",
+    ]
+    with patch.object(sys, "argv", test_args):
+        args = parse_args()
+        assert args.temperature == 0.0
