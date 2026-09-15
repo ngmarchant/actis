@@ -1163,21 +1163,22 @@ class ScaleDocDataset(TabularDataset):
     def __init__(
         self,
         dataset_name: str,
-        query_id: int = 0,
+        query_id: str = '0',
         data_dir: str | Path = "experiments/data/scaledoc",
         score_col: str = "proxy_score",
         label_col: str = "label",
         data_path: str | Path | None = None,
     ):
         clean_name = dataset_name.lower().replace("-", "_")
+        clean_qid = query_id.lower()
         if data_path is None:
-            resolved_path = Path(data_dir) / clean_name / f"q{query_id}.parquet"
+            resolved_path = Path(data_dir) / clean_name / f"q{clean_qid}.parquet"
         else:
             resolved_path = Path(data_path)
 
         super().__init__(
-            name=f"scaledoc_{clean_name}_q{query_id}",
-            description=f"ScaleDoc {clean_name} query {query_id}",
+            name=f"scaledoc_{clean_name}_q{clean_qid}",
+            description=f"ScaleDoc {clean_name} query {clean_qid}",
             data_path=resolved_path,
             score_col=score_col,
             label_col=label_col,
@@ -1191,7 +1192,7 @@ class ScaleDocPubMed(ScaleDocDataset):
 
     def __init__(
         self,
-        query_id: int = 0,
+        query_id: str = '0',
         data_dir: str | Path = "experiments/data/scaledoc",
         score_col: str = "proxy_score",
         label_col: str = "label",
@@ -1212,7 +1213,7 @@ class ScaleDocBigPatent(ScaleDocDataset):
 
     def __init__(
         self,
-        query_id: int = 0,
+        query_id: str = '0',
         data_dir: str | Path = "experiments/data/scaledoc",
         score_col: str = "proxy_score",
         label_col: str = "label",
@@ -1233,7 +1234,7 @@ class ScaleDocGovReport(ScaleDocDataset):
 
     def __init__(
         self,
-        query_id: int = 0,
+        query_id: str = '0',
         data_dir: str | Path = "experiments/data/scaledoc",
         score_col: str = "proxy_score",
         label_col: str = "label",
@@ -1252,13 +1253,13 @@ class ScaleDocGovReport(ScaleDocDataset):
 class _ScenarioRegistry(dict):
     """
     Scenario registry supporting static lookups and dynamic instantiation
-    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1').
+    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1' or 'scaledoc_pubmed_q0_ext').
     """
 
     def __missing__(self, key: str) -> BaseScenario:
-        m = re.match(r"^scaledoc_(pubmed|big_patent|gov_report)_q(\d+)$", key)
+        m = re.match(r"^scaledoc_(pubmed|big_patent|gov_report)_q(\d+(?:_ext)?)$", key)
         if m:
-            ds_name, qid = m.group(1), int(m.group(2))
+            ds_name, qid = m.group(1), m.group(2)
             scenario = ScaleDocDataset(dataset_name=ds_name, query_id=qid)
             self[key] = scenario
             return scenario
@@ -1283,9 +1284,9 @@ SCENARIOS = _ScenarioRegistry({
     "supg_jackson": SUPGJackson(),
     "supg_tacred": SUPGTACRED(),
     # ScaleDoc Benchmarks (defaults: query 0)
-    "scaledoc_pubmed_q0": ScaleDocPubMed(query_id=0),
-    "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id=0),
-    "scaledoc_gov_report_q0": ScaleDocGovReport(query_id=0),
+    "scaledoc_pubmed_q0": ScaleDocPubMed(query_id='0'),
+    "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id='0'),
+    "scaledoc_gov_report_q0": ScaleDocGovReport(query_id='0'),
 })
 
 

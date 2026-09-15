@@ -172,24 +172,17 @@ def _default_prompt_formatter(
     ]
 
 
-_EXCLUDED_REGISTRATION_FIELDS = frozenset(
-    {"model", "api_key", "api_base", "api_version"}
-)
-
-
 def _register_custom_pricing(model_list: list[dict[str, Any]]) -> None:
     """Registers each deployment's model_info/pricing fields from config.yaml."""
     cost_map = {}
     for entry in model_list:
         params = entry.get("litellm_params", {}) or {}
+        model_info = entry.get("model_info", {}) or {}
         target_model = params.get("model")
         if not target_model:
             continue
-        info = {
-            k: v for k, v in params.items() if k not in _EXCLUDED_REGISTRATION_FIELDS
-        }
-        if info:
-            cost_map[target_model] = info
+        if model_info:
+            cost_map[target_model] = model_info
     if cost_map:
         litellm.register_model(cost_map)
 
@@ -434,11 +427,9 @@ def _extract_litellm_binary_probability(response: Any) -> float:
                     no_logprob = lp
 
     if yes_logprob is not None and no_logprob is not None:
-        # Normalized softmax probability
-        exp_y = math.exp(yes_logprob)
-        exp_n = math.exp(no_logprob)
-        denom = exp_y + exp_n
-        return float(exp_y / denom) if denom > 0 else 0.5
+        # Softmax over two logits via sigmoid of the log-odds (shift-invariant,
+        # avoids underflow when both logprobs are very negative).
+        return float(1.0 / (1.0 + math.exp(no_logprob - yes_logprob)))
     if yes_logprob is not None:
         return min(1.0, max(0.0, float(math.exp(yes_logprob))))
     if no_logprob is not None:

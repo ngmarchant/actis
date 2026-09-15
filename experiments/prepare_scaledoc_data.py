@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Mapping, Sequence
 
 # Ensure project root is in sys.path
 _ROOT = Path(__file__).resolve().parent.parent
@@ -70,7 +71,11 @@ def parse_args() -> argparse.Namespace:
         "--queries",
         nargs="+",
         default=["0"],
-        help="List of query IDs to process, e.g. '0 1 2' or 'all' (default: 0)",
+        help=(
+            "List of query IDs to process (e.g. '0 1 0_ext'), or presets: "
+            "'all' (base + ext), 'base' (original queries), or 'ext' (extended queries). "
+            "(default: 0)"
+        ),
     )
     parser.add_argument(
         "--query-file",
@@ -81,8 +86,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--oracle-model",
         type=str,
-        default="gpt-4o",
-        help="Model identifier for oracle ground truth (default: gpt-4o)",
+        default="azure/gpt-4o",
+        help="Model identifier for oracle ground truth (default: azure/gpt-4o)",
     )
     parser.add_argument(
         "--proxy-model",
@@ -235,7 +240,7 @@ def load_query_dataset(path: Path, format: str = "parquet") -> Dataset | None:
 
 @dataclass
 class QueryPlanItem:
-    qid: int
+    qid: str
     query_text: str
     target_file: Path
     existing_ds: Dataset | None
@@ -388,8 +393,8 @@ class ExecutionPlan:
 
 
 def create_execution_plan(
-    selected_qids: list[int],
-    query_map: dict[int, str],
+    selected_qids: Sequence[str],
+    query_map: Mapping[str, str],
     base_docs: Dataset,
     output_dir: Path,
     output_format: str,
@@ -402,7 +407,7 @@ def create_execution_plan(
     doc_items = base_docs["content"]
 
     for qid in selected_qids:
-        if qid not in query_map:
+        if qid not in query_map and qid not in query_map:
             print(f"Warning: Query ID {qid} not found in query list, skipping.")
             continue
 
@@ -476,12 +481,44 @@ def main() -> int:
 
     # Load queries
     all_queries = load_scaledoc_queries(args.dataset, query_file=args.query_file)
-    query_map = {int(q["q_id"]): q["query"] for q in all_queries}
+    query_map: dict[str, str] = {q["q_id"]: q["query"] for q in all_queries}
 
-    if len(args.queries) == 1 and args.queries[0].lower() == "all":
-        selected_qids = sorted(query_map.keys())
+    def sort_key(k: str) -> tuple[int, int]:
+        k = str(k)
+        if k.endswith("_ext"):
+            prefix = k[:-4]
+            num = int(prefix) if prefix.isdigit() else 999
+            return (1, num)
+        num = int(k) if k.isdigit() else 999
+        return (0, num)
+
+    all_keys = sorted(query_map.keys(), key=sort_key)
+    base_keys = [k for k in all_keys if not k.endswith("_ext")]
+    ext_keys = [k for k in all_keys if k.endswith("_ext")]
+
+    raw_queries = [str(q).strip() for q in args.queries]
+    if len(raw_queries) == 1 and raw_queries[0].lower() == "all":
+        selected_qids = all_keys
+    elif len(raw_queries) == 1 and raw_queries[0].lower() == "base":
+        selected_qids = base_keys
+    elif len(raw_queries) == 1 and raw_queries[0].lower() == "ext":
+        if not ext_keys:
+            print(
+                f"Warning: No extended queries available for dataset '{args.dataset}'."
+            )
+            return 0
+        selected_qids = ext_keys
     else:
-        selected_qids = [int(q) for q in args.queries]
+        selected_qids = []
+        for q in raw_queries:
+            if q in query_map:
+                selected_qids.append(q)
+            else:
+                valid_sample = ", ".join(all_keys[:10])
+                raise ValueError(
+                    f"Invalid query ID '{q}' for dataset '{args.dataset}'. "
+                    f"Valid IDs include: {valid_sample}..."
+                )
 
     print(
         f"Selected {len(selected_qids)} queries for '{args.dataset}': {selected_qids}"

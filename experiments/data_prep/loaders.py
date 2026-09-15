@@ -280,15 +280,34 @@ def load_scaledoc_queries(
 
     # Normalize name keys
     clean_name = dataset_name.lower().replace("-", "_")
+    base_key = None
     if clean_name in data:
-        return data[clean_name]
+        base_key = clean_name
+    else:
+        for k in data:
+            if k.replace("_", "") == clean_name.replace("_", ""):
+                base_key = k
+                break
 
-    # Try fuzzy match
-    for k in data:
-        if k.replace("_", "") == clean_name.replace("_", ""):
-            return data[k]
+    if base_key is None:
+        raise KeyError(
+            f"Dataset '{dataset_name}' not found in query definitions. "
+            f"Available keys: {list(data.keys())}"
+        )
 
-    raise KeyError(
-        f"Dataset '{dataset_name}' not found in query definitions. "
-        f"Available keys: {list(data.keys())}"
-    )
+    # Base queries (q_id: 0, 1, 2, ...)
+    results: list[dict[str, Any]] = [
+        {"q_id": str(item["q_id"]), "query": item["query"]}
+        for item in data[base_key]
+    ]
+
+    # Check for extended queries under f"{base_key}_ext" (q_id: 0_ext, 1_ext, ...)
+    ext_key = f"{base_key}_ext"
+    if ext_key in data:
+        for item in data[ext_key]:
+            results.append({
+                "q_id": f"{item['q_id']}_ext",
+                "query": item["query"],
+            })
+
+    return results

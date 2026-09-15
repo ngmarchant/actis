@@ -77,15 +77,22 @@ Safe for use.
 
 def test_load_scaledoc_queries():
     queries = load_scaledoc_queries("pubmed")
-    assert len(queries) == 20
-    assert queries[0]["q_id"] == 0
+    assert len(queries) == 26
+    assert queries[0]["q_id"] == '0'
     assert "query" in queries[0]
+    assert queries[20]["q_id"] == "0_ext"
+    assert queries[25]["q_id"] == "5_ext"
 
     bp_queries = load_scaledoc_queries("big_patent")
-    assert len(bp_queries) == 20
+    assert len(bp_queries) == 25
+    assert bp_queries[0]["q_id"] == '0'
+    assert bp_queries[20]["q_id"] == "0_ext"
+    assert bp_queries[24]["q_id"] == "4_ext"
 
     gr_queries = load_scaledoc_queries("gov_report")
     assert len(gr_queries) == 20
+    assert gr_queries[0]["q_id"] == '0'
+    assert gr_queries[19]["q_id"] == '19'
 
 
 def test_cost_estimate_summary():
@@ -240,7 +247,7 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     })
     save_dataset(ds, data_file, format="parquet")
 
-    scenario = ScaleDocPubMed(query_id=0, data_path=data_file)
+    scenario = ScaleDocPubMed(query_id='0', data_path=data_file)
     scores, labels = scenario.generate_population()
 
     assert np.allclose(scores, [0.9, 0.1, 0.8, 0.2])
@@ -250,12 +257,12 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     dynamic_sc = SCENARIOS["scaledoc_pubmed_q0"]
     assert isinstance(dynamic_sc, ScaleDocDataset)
     assert dynamic_sc.dataset_name == "pubmed"
-    assert dynamic_sc.query_id == 0
+    assert dynamic_sc.query_id == '0'
 
     dynamic_sc5 = SCENARIOS["scaledoc_gov_report_q5"]
     assert isinstance(dynamic_sc5, ScaleDocDataset)
     assert dynamic_sc5.dataset_name == "gov_report"
-    assert dynamic_sc5.query_id == 5
+    assert dynamic_sc5.query_id == '5'
 
 
 def test_read_dataframe_hf_disk(tmp_path):
@@ -352,7 +359,7 @@ def test_load_scaledoc_queries_url(tmp_path):
             cache_dir=tmp_path / "cache",
         )
         assert len(queries2) == 1
-        assert queries2[0]["q_id"] == 0
+        assert queries2[0]["q_id"] == '0'
         assert (tmp_path / "cache" / "query.json").exists()
 
 
@@ -365,6 +372,7 @@ def test_config_yaml_custom_rates_and_oracle(tmp_path):
       model: azure/aueast-deployment
       api_base: https://custom-azure.openai.azure.com/
       api_key: os.environ/CUSTOM_KEY
+    model_info:
       input_cost_per_token: 0.0000050
       output_cost_per_token: 0.0000200
 """,
@@ -396,6 +404,8 @@ def test_config_yaml_custom_rates_and_oracle(tmp_path):
                 "model_name": "dict-proxy-model",
                 "litellm_params": {
                     "model": "azure/dict-deployment",
+                },
+                "model_info": {
                     "input_cost_per_token": 0.0000030,
                     "output_cost_per_token": 0.0000150,
                 },
@@ -583,13 +593,13 @@ def test_create_execution_plan_and_summary(tmp_path):
     )
 
     query_map = {
-        0: "Query 0 text",
-        1: "Query 1 text",
-        2: "Query 2 text",
+        '0': "Query 0 text",
+        '1': "Query 1 text",
+        '2': "Query 2 text",
     }
 
     plan = create_execution_plan(
-        selected_qids=[0, 1, 2],
+        selected_qids=['0', '1', '2'],
         query_map=query_map,
         base_docs=base_ds,
         output_dir=tmp_path,
@@ -681,7 +691,7 @@ def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
     })
     save_dataset(ds, q_file, format="parquet")
 
-    sc = ScaleDocPubMed(query_id=0, data_path=q_file)
+    sc = ScaleDocPubMed(query_id='0', data_path=q_file)
     df = sc.get_dataframe()
     assert len(df) == 3
     assert "oracle_cost" in df.columns
@@ -697,6 +707,86 @@ def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
 
     _, o_tokens = sc.get_costs("input_tokens")
     assert np.allclose(o_tokens, [100.0, 60.0, 160.0])
+
+
+def test_create_execution_plan_with_ext_queries(tmp_path):
+    from experiments.prepare_scaledoc_data import create_execution_plan
+
+    base_ds = Dataset.from_dict({
+        "id": ["d1", "d2"],
+        "content": ["Text 1", "Text 2"],
+    })
+
+    # Pre-populate q0_ext.parquet with label
+    q0_ext_file = tmp_path / "q0_ext.parquet"
+    ds_ext = Dataset.from_dict({
+        "id": ["d1", "d2"],
+        "content": ["Text 1", "Text 2"],
+        "label": [True, False],
+    })
+    save_dataset(ds_ext, q0_ext_file, format="parquet")
+
+    mock_oracle = MagicMock(spec=BaseOracle)
+    mock_oracle.model = "test-oracle"
+    mock_oracle.estimate_cost.return_value = CostEstimate(
+        total_items=2,
+        prompt_tokens=20,
+        completion_tokens=2,
+        total_tokens=22,
+        estimated_cost=0.01,
+        model_name="test-oracle",
+    )
+
+    query_map = {
+        "0": "Base query 0",
+        "0_ext": "Extended query 0",
+        "1_ext": "Extended query 1",
+    }
+
+    plan = create_execution_plan(
+        selected_qids=["0", "0_ext", "1_ext"],
+        query_map=query_map,
+        base_docs=base_ds,
+        output_dir=tmp_path,
+        output_format="parquet",
+        oracle=mock_oracle,
+        proxy=None,
+        force=False,
+    )
+
+    assert len(plan.items) == 3
+    assert plan.items[0].qid == "0"
+    assert plan.items[0].target_file == tmp_path / "q0.parquet"
+    assert plan.items[0].needs_oracle is True
+
+    assert plan.items[1].qid == "0_ext"
+    assert plan.items[1].target_file == tmp_path / "q0_ext.parquet"
+    assert plan.items[1].has_label is True
+    assert plan.items[1].needs_oracle is False
+
+    assert plan.items[2].qid == "1_ext"
+    assert plan.items[2].target_file == tmp_path / "q1_ext.parquet"
+    assert plan.items[2].needs_oracle is True
+
+    summary = plan.summary()
+    assert "Query  0: Oracle: NEEDED" in summary
+    assert "Query 0_ext: Oracle: COMPLETED" in summary
+    assert "Query 1_ext: Oracle: NEEDED" in summary
+
+
+def test_scenarios_registry_with_ext_queries():
+    # Test dynamic registration of extended query scenarios
+    sc_pub_ext = SCENARIOS["scaledoc_pubmed_q0_ext"]
+    assert sc_pub_ext.dataset_name == "pubmed"
+    assert sc_pub_ext.query_id == "0_ext"
+    assert sc_pub_ext.name == "scaledoc_pubmed_q0_ext"
+    assert str(sc_pub_ext.data_path).endswith("experiments/data/scaledoc/pubmed/q0_ext.parquet")
+
+    sc_bp_ext = SCENARIOS["scaledoc_big_patent_q4_ext"]
+    assert sc_bp_ext.dataset_name == "big_patent"
+    assert sc_bp_ext.query_id == "4_ext"
+    assert sc_bp_ext.name == "scaledoc_big_patent_q4_ext"
+    assert str(sc_bp_ext.data_path).endswith("experiments/data/scaledoc/big_patent/q4_ext.parquet")
 
 
 

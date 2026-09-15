@@ -15,7 +15,7 @@ model_list:
       model: azure/gpt-4o
       api_base: os.environ/AZURE_API_BASE
       api_key: os.environ/AZURE_API_KEY
-      litelllm_provider: azure
+    model_info:
       deprecation_date: 2027-04-14
       max_input_tokens: 128000
       max_output_tokens: 16384
@@ -25,10 +25,10 @@ model_list:
       cache_creation_input_token_cost: 0.000001738
       mode: chat
       supports_function_calling: true,
-      supports_parallel_function_calling: true,
-      supports_prompt_caching: true,
-      supports_response_schema: true,
-      supports_tool_choice: true,
+      supports_parallel_function_calling: true
+      supports_prompt_caching: true
+      supports_response_schema: true
+      supports_tool_choice: true
       supports_vision: true
 
   - model_name: azure/gpt-5
@@ -36,7 +36,7 @@ model_list:
       model: azure/gpt-5
       api_base: os.environ/AZURE_API_BASE
       api_key: os.environ/AZURE_API_KEY
-      litelllm_provider: azure
+    model_info:
       deprecation_date: 2027-02-09
       max_input_tokens: 272000
       max_output_tokens: 128000
