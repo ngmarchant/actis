@@ -469,6 +469,7 @@ def test_oracle_router_acompletion_call(tmp_path):
     mock_resp.choices = [mock_choice]
     mock_resp.usage = MagicMock(prompt_tokens=5, completion_tokens=1)
 
+    assert oracle.router is not None
     oracle.router.acompletion = AsyncMock(return_value=mock_resp)
 
     out = oracle.predict(["doc 1"], "is valid?")
@@ -888,7 +889,9 @@ def test_system_prompt_label_slots():
         positive_label="Yes",
         negative_label="No",
     )
-    assert "Just output the 'Yes' or 'No' only." in messages_scaledoc[0]["content"]
+    messages_scaledoc_content = messages_scaledoc[0]["content"]
+    assert messages_scaledoc_content is not None
+    assert "Just output the 'Yes' or 'No' only." in messages_scaledoc_content
 
     # Test custom formatting for BARGAIN ("True" / "False")
     messages_bargain = _default_prompt_formatter(
@@ -899,7 +902,9 @@ def test_system_prompt_label_slots():
         positive_label="True",
         negative_label="False",
     )
-    assert "Just output the 'True' or 'False' only." in messages_bargain[0]["content"]
+    messages_bargain_content = messages_bargain[0]["content"]
+    assert messages_bargain_content is not None
+    assert "Just output the 'True' or 'False' only." in messages_bargain_content
 
 
 def test_add_oracle_labels_with_oracle_score():
@@ -984,3 +989,159 @@ def test_prepare_scaledoc_cli_temperature_arg():
     with patch.object(sys, "argv", test_args):
         args = parse_args()
         assert args.temperature == 0.0
+
+
+def test_content_policy_violation_fast_fail_and_none_label(tmp_path):
+    import litellm
+    from datasets import Dataset
+
+    from experiments.data_prep.labeling import add_oracle_labels
+    from experiments.data_prep.models import (
+        LiteLLMOracle,
+        LiteLLMProxy,
+        _is_content_policy_violation,
+    )
+
+    # 1. Test helper detection
+    class MockContentFilterErr(Exception):
+        pass
+
+    mock_exc = MockContentFilterErr(
+        "Error code: 400 - The response was filtered due to the prompt triggering "
+        "Azure OpenAI's content management policy. ResponsibleAIPolicyViolation"
+    )
+    assert _is_content_policy_violation(mock_exc) is True
+    assert _is_content_policy_violation(ValueError("General failure")) is False
+
+    # 2. Test LiteLLMOracle fast-fail (call count is 1, not retried 5 times)
+    oracle = LiteLLMOracle(model="azure/gpt-4o", max_retries=5)
+    with patch.object(litellm, "acompletion", new_callable=AsyncMock) as mock_acompletion:
+        mock_acompletion.side_effect = mock_exc
+        out = oracle.predict(["sensitive medical document"], "question?")
+        assert mock_acompletion.call_count == 1  # Fast-fail without 5 retries
+        assert out.labels == [None]
+        assert out.scores == [None]
+        assert out.costs is not None
+        assert out.costs[0]["filtered"] is True
+
+    # 3. Test LiteLLMProxy fast-fail
+    proxy = LiteLLMProxy(model="openai/test", max_retries=5)
+    with patch.object(litellm, "acompletion", new_callable=AsyncMock) as mock_acompletion:
+        mock_acompletion.side_effect = mock_exc
+        scores, costs = proxy.score(["sensitive medical document"], "question?")
+        assert mock_acompletion.call_count == 1
+        assert scores == [None]
+        assert costs[0]["filtered"] is True
+
+    # 4. Test dataset & checkpoint preservation with None values
+    ds = Dataset.from_dict({
+        "id": [1, 2],
+        "content": ["normal text", "blocked text"],
+    })
+    cp_path = tmp_path / "test_cp.json"
+
+    # Mock oracle returning True for item 1, and None for item 2
+    from experiments.data_prep.models import BaseOracle, OracleOutput
+    mock_oracle = MagicMock(spec=BaseOracle)
+    mock_oracle.predict.return_value = OracleOutput(
+        labels=[True, None],
+        scores=[0.95, None],
+        costs=[{"monetary": 0.001}, {"filtered": True, "monetary": 0.0}],
+    )
+    mock_oracle.estimate_cost.return_value = None
+
+    ds_labeled = add_oracle_labels(
+        dataset=ds,
+        query="query",
+        oracle=mock_oracle,
+        checkpoint_path=cp_path,
+        skip_cost_confirm=True,
+    )
+    # Ensure length preserved and None is NOT coerced to False
+    assert len(ds_labeled) == 2
+    assert ds_labeled["label"] == [True, None]
+    assert ds_labeled["oracle_score"] == [0.95, None]
+
+    # Verify checkpoint recovery preserves None and skips re-predicting
+    mock_oracle.predict.reset_mock()
+    ds_recovered = add_oracle_labels(
+        dataset=ds,
+        query="query",
+        oracle=mock_oracle,
+        checkpoint_path=cp_path,
+        skip_cost_confirm=True,
+    )
+    assert len(ds_recovered) == 2
+    assert ds_recovered["label"] == [True, None]
+    assert ds_recovered["oracle_score"] == [0.95, None]
+    assert mock_oracle.predict.call_count == 0
+
+
+def test_create_execution_plan_subtracts_checkpointed_items(tmp_path):
+    import json
+
+    from experiments.data_prep.models import BaseOracle, CostEstimate
+    from experiments.prepare_scaledoc_data import create_execution_plan
+
+    base_ds = Dataset.from_dict({
+        "id": ["d1", "d2", "d3", "d4"],
+        "content": ["text 1", "text 2", "text 3", "text 4"],
+    })
+
+    checkpoints_dir = tmp_path / "checkpoints"
+    checkpoints_dir.mkdir(parents=True)
+    # Checkpoint with indices 0 and 1 completed (2 out of 4)
+    cp_q0 = checkpoints_dir / "q0_oracle.json"
+    with open(cp_q0, "w", encoding="utf-8") as f:
+        json.dump({
+            "0": {"value": True, "aux": 0.9, "cost": {}},
+            "1": {"value": False, "aux": 0.1, "cost": {}},
+        }, f)
+
+    mock_oracle = MagicMock(spec=BaseOracle)
+    mock_oracle.model = "test-oracle"
+
+    def mock_estimate(items, query):
+        return CostEstimate(
+            total_items=len(items),
+            prompt_tokens=len(items) * 10,
+            completion_tokens=len(items) * 1,
+            total_tokens=len(items) * 11,
+            estimated_cost=len(items) * 0.005,
+            model_name="test-oracle",
+        )
+
+    mock_oracle.estimate_cost.side_effect = mock_estimate
+
+    query_map = {"0": "Query text"}
+    plan = create_execution_plan(
+        selected_qids=["0"],
+        query_map=query_map,
+        base_docs=base_ds,
+        output_dir=tmp_path,
+        output_format="parquet",
+        oracle=mock_oracle,
+        proxy=None,
+        force=False,
+    )
+
+    item = plan.items[0]
+    assert item.needs_oracle is True
+    # Verify that only 2 remaining items were estimated (not all 4)
+    assert item.oracle_est is not None
+    assert item.oracle_est.total_items == 2
+    assert item.oracle_est.estimated_cost == 0.010
+    assert plan.total_oracle_items_remaining == 2
+    assert plan.total_oracle_cost == 0.010
+    summary = plan.summary()
+    assert "Items remaining:      2" in summary
+
+
+def test_litellm_disables_aiohttp_transport():
+    import litellm
+
+    import experiments.data_prep.models  # noqa: F401
+    assert litellm.disable_aiohttp_transport is True
+
+
+

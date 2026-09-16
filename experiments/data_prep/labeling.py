@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from datasets import Dataset
 from tqdm import tqdm
@@ -24,6 +24,25 @@ from experiments.data_prep.models import (
     CallableProxy,
     OracleOutput,
 )
+
+
+def get_unprocessed_items(
+    items: Sequence[Any],
+    checkpoint_path: Path | str | None,
+) -> list[Any]:
+    """Returns items whose indices are not yet recorded in the checkpoint file."""
+    if checkpoint_path is None:
+        return list(items)
+    p = Path(checkpoint_path)
+    if not p.exists():
+        return list(items)
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+            processed = {int(k) for k in saved.keys()}
+        return [item for i, item in enumerate(items) if i not in processed]
+    except Exception:
+        return list(items)
 
 
 def _confirm_cost(estimate, skip_prompt: bool = False) -> bool:
@@ -107,18 +126,27 @@ def add_model_output(
                 saved = json.load(f)
                 for k, v in saved.items():
                     if isinstance(v, dict) and "value" in v:
+                        raw_val = v["value"]
                         results[int(k)] = {
-                            "value": cast_fn(v["value"]),
+                            "value": (
+                                cast_fn(raw_val)
+                                if (cast_fn is not None and raw_val is not None)
+                                else raw_val
+                            ),
                             "aux": (
                                 aux_cast_fn(v["aux"])
-                                if v.get("aux") is not None
-                                else None
+                                if aux_cast_fn is not None and v.get("aux") is not None
+                                else v.get("aux")
                             ),
                             "cost": dict(v.get("cost", {})),
                         }
                     else:
                         results[int(k)] = {
-                            "value": cast_fn(v),
+                            "value": (
+                                cast_fn(v)
+                                if (cast_fn is not None and v is not None)
+                                else v
+                            ),
                             "aux": None,
                             "cost": {},
                         }
@@ -169,8 +197,16 @@ def add_model_output(
                     else None
                 )
                 results[idx] = {
-                    "value": cast_fn(out),
-                    "aux": aux_cast_fn(aux_val) if aux_val is not None else None,
+                    "value": (
+                        cast_fn(out)
+                        if (cast_fn is not None and out is not None)
+                        else out
+                    ),
+                    "aux": (
+                        aux_cast_fn(aux_val)
+                        if (aux_cast_fn is not None and aux_val is not None)
+                        else aux_val
+                    ),
                     "cost": dict(cost),
                 }
 
@@ -242,7 +278,8 @@ def add_oracle_labels(
         oracle = CallableOracle(oracle)
 
     items = dataset[input_col]
-    estimate = oracle.estimate_cost(items, query)
+    remaining_items = get_unprocessed_items(items, checkpoint_path)
+    estimate = oracle.estimate_cost(remaining_items, query)
 
     return add_model_output(
         dataset=dataset,
@@ -298,7 +335,8 @@ def add_proxy_scores(
         proxy = CallableProxy(proxy)
 
     items = dataset[input_col]
-    estimate = proxy.estimate_cost(items, query)
+    remaining_items = get_unprocessed_items(items, checkpoint_path)
+    estimate = proxy.estimate_cost(remaining_items, query)
 
     return add_model_output(
         dataset=dataset,

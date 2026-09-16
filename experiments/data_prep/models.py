@@ -16,7 +16,7 @@ import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import litellm
 import yaml
@@ -29,6 +29,9 @@ from scipy.special import expit, logsumexp
 
 # Automatically drop parameters unsupported by specific models/providers
 litellm.drop_params = True
+
+# Use standard HTTPX transport instead of aiohttp to avoid unclosed connector/session warnings
+litellm.disable_aiohttp_transport = True
 
 ConfigType = (
     str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
@@ -58,13 +61,35 @@ class CostEstimate:
         )
 
 
+class ContentPolicyFilteredError(Exception):
+    """Raised when an item is filtered or rejected by content management policies."""
+
+    pass
+
+
+def _is_content_policy_violation(exc: Exception) -> bool:
+    """Checks if an exception indicates a content management policy violation or
+    filter."""
+    content_policy_err = getattr(
+        getattr(litellm, "exceptions", None), "ContentPolicyViolationError", None
+    )
+    if content_policy_err is not None and isinstance(exc, content_policy_err):
+        return True
+    msg = str(exc).lower()
+    return (
+        "content_filter" in msg
+        or "content management policy" in msg
+        or "responsibleaipolicyviolation" in msg
+    )
+
+
 @dataclass
 class OracleOutput:
     """Output container for oracle model predictions."""
 
-    labels: list[bool]
-    scores: list[float] | None = None
-    costs: list[dict[str, Any]] | None = None
+    labels: Sequence[bool | None]
+    scores: Sequence[float | None] | None = None
+    costs: Sequence[dict[str, Any]] | None = None
 
 
 class BaseOracle(ABC):
@@ -321,7 +346,21 @@ class BaseLiteLLMModel:
 
         self.router: litellm.Router | None = None
         if config is not None:
-            self.router = load_litellm_config(config)
+            router = load_litellm_config(config)
+            router_models = {
+                m.get("model_name")
+                for m in getattr(router, "model_list", [])
+                if isinstance(m, dict) and "model_name" in m
+            }
+            router_models.update(
+                m.get("litellm_params", {}).get("model")
+                for m in getattr(router, "model_list", [])
+                if isinstance(m, dict)
+                and isinstance(m.get("litellm_params"), dict)
+                and "model" in m.get("litellm_params", {})
+            )
+            if self.model in router_models:
+                self.router = router
 
     def format_messages(self, item: Any, query: Any) -> list[AllMessageValues]:
         if self.prompt_formatter is not None:
@@ -406,6 +445,8 @@ class BaseLiteLLMModel:
                         **kwargs
                     )
                 except Exception as exc:
+                    if _is_content_policy_violation(exc):
+                        raise ContentPolicyFilteredError(str(exc)) from exc
                     if attempt == self.max_retries - 1:
                         raise RuntimeError(
                             f"LiteLLM call failed after {self.max_retries} "
@@ -548,25 +589,38 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
         item: Any,
         query: Any,
         semaphore: asyncio.Semaphore,
-    ) -> tuple[bool, float, dict[str, Any]]:
-        response = await self._call_litellm(
-            item=item,
-            query=query,
-            semaphore=semaphore,
-            max_tokens=1,
-            logprobs=True,
-            top_logprobs=20,
-        )
-        content = (response.choices[0].message.content or "").strip().lower()
-        pos_target = self.positive_label.strip().lower()
-        label = content.startswith(pos_target)
-        score = _extract_litellm_binary_probability(
-            response,
-            positive_label=self.positive_label,
-            negative_label=self.negative_label,
-        )
-        cost = _extract_litellm_cost_metrics(response, self.model)
-        return label, score, cost
+    ) -> tuple[bool | None, float | None, dict[str, Any]]:
+        try:
+            response = await self._call_litellm(
+                item=item,
+                query=query,
+                semaphore=semaphore,
+                max_tokens=1,
+                logprobs=True,
+                top_logprobs=20,
+            )
+            content = (response.choices[0].message.content or "").strip().lower()
+            pos_target = self.positive_label.strip().lower()
+            label = content.startswith(pos_target)
+            score = _extract_litellm_binary_probability(
+                response,
+                positive_label=self.positive_label,
+                negative_label=self.negative_label,
+            )
+            cost = _extract_litellm_cost_metrics(response, self.model)
+            return label, score, cost
+        except ContentPolicyFilteredError as cpe:
+            print(
+                f"Warning: Item rejected by content management policy. Setting label "
+                f"to None. Details: {cpe}"
+            )
+            return None, None, {
+                "filtered": True,
+                "error": str(cpe),
+                "monetary": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
 
     async def apredict(
         self, items: list[Any], query: Any
@@ -622,22 +676,35 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
         item: Any,
         query: Any,
         semaphore: asyncio.Semaphore,
-    ) -> tuple[float, dict[str, Any]]:
-        response = await self._call_litellm(
-            item=item,
-            query=query,
-            semaphore=semaphore,
-            max_tokens=1,
-            logprobs=True,
-            top_logprobs=20,
-        )
-        score = _extract_litellm_binary_probability(
-            response,
-            positive_label=self.positive_label,
-            negative_label=self.negative_label,
-        )
-        cost = _extract_litellm_cost_metrics(response, self.model)
-        return score, cost
+    ) -> tuple[float | None, dict[str, Any]]:
+        try:
+            response = await self._call_litellm(
+                item=item,
+                query=query,
+                semaphore=semaphore,
+                max_tokens=1,
+                logprobs=True,
+                top_logprobs=20,
+            )
+            score = _extract_litellm_binary_probability(
+                response,
+                positive_label=self.positive_label,
+                negative_label=self.negative_label,
+            )
+            cost = _extract_litellm_cost_metrics(response, self.model)
+            return score, cost
+        except ContentPolicyFilteredError as cpe:
+            print(
+                f"Warning: Item rejected by proxy content policy. Setting score "
+                f"to None. Details: {cpe}"
+            )
+            return None, {
+                "filtered": True,
+                "error": str(cpe),
+                "monetary": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
 
     async def ascore(
         self, items: list[Any], query: Any

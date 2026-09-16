@@ -34,6 +34,7 @@ from experiments.data_prep import (  # noqa: E402
     LiteLLMProxy,
     add_oracle_labels,
     add_proxy_scores,
+    get_unprocessed_items,
     load_bigpatent_documents,
     load_govreport_documents,
     load_pubmed_documents,
@@ -273,6 +274,22 @@ class ExecutionPlan:
         return sum(1 for item in self.items if item.needs_proxy)
 
     @property
+    def total_oracle_items_remaining(self) -> int:
+        return sum(
+            item.oracle_est.total_items
+            for item in self.items
+            if item.oracle_est is not None
+        )
+
+    @property
+    def total_proxy_items_remaining(self) -> int:
+        return sum(
+            item.proxy_est.total_items
+            for item in self.items
+            if item.proxy_est is not None
+        )
+
+    @property
     def total_oracle_prompt_tokens(self) -> int:
         return sum(
             item.oracle_est.prompt_tokens
@@ -370,6 +387,7 @@ class ExecutionPlan:
                 f"Oracle ({self.oracle_model}):",
                 f"  Queries to run:       "
                 f"{self.total_oracle_queries} of {len(self.items)}",
+                f"  Items remaining:      {self.total_oracle_items_remaining:,}",
                 f"  Est. Prompt Tokens:   {self.total_oracle_prompt_tokens:,}",
                 f"  Est. Compl. Tokens:   {self.total_oracle_compl_tokens:,}",
                 f"  Est. Cost:            ${self.total_oracle_cost:,.4f}",
@@ -382,6 +400,7 @@ class ExecutionPlan:
                 f"Proxy ({self.proxy_model}):",
                 f"  Queries to run:       "
                 f"{self.total_proxy_queries} of {len(self.items)}",
+                f"  Items remaining:      {self.total_proxy_items_remaining:,}",
                 f"  Est. Prompt Tokens:   {self.total_proxy_prompt_tokens:,}",
                 f"  Est. Compl. Tokens:   {self.total_proxy_compl_tokens:,}",
                 f"  Est. Cost:            ${self.total_proxy_cost:,.4f}",
@@ -433,13 +452,27 @@ def create_execution_plan(
         needs_oracle = (oracle is not None) and not has_label
         needs_proxy = (proxy is not None) and not has_proxy
 
+        checkpoints_dir = output_dir / "checkpoints"
+        cp_oracle = checkpoints_dir / f"q{qid}_oracle.json"
+        cp_proxy = checkpoints_dir / f"q{qid}_proxy.json"
+
         oracle_est = None
         if needs_oracle and oracle is not None:
-            oracle_est = oracle.estimate_cost(doc_items, q_text)
+            oracle_items = (
+                get_unprocessed_items(doc_items, cp_oracle)
+                if not force
+                else list(doc_items)
+            )
+            oracle_est = oracle.estimate_cost(oracle_items, q_text)
 
         proxy_est = None
         if needs_proxy and proxy is not None:
-            proxy_est = proxy.estimate_cost(doc_items, q_text)
+            proxy_items = (
+                get_unprocessed_items(doc_items, cp_proxy)
+                if not force
+                else list(doc_items)
+            )
+            proxy_est = proxy.estimate_cost(proxy_items, q_text)
 
         plan_items.append(
             QueryPlanItem(

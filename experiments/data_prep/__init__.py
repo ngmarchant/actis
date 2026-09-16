@@ -11,6 +11,7 @@ from experiments.data_prep.labeling import (  # noqa: E402
     add_model_output,
     add_oracle_labels,
     add_proxy_scores,
+    get_unprocessed_items,
     save_dataset,
 )
 from experiments.data_prep.loaders import (  # noqa: E402
@@ -52,5 +53,6 @@ __all__ = [
     "add_model_output",
     "add_oracle_labels",
     "add_proxy_scores",
+    "get_unprocessed_items",
     "save_dataset",
 ]
