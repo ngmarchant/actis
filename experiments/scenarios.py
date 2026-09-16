@@ -1,6 +1,7 @@
 import re
 import warnings
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -8,8 +9,146 @@ import pandas as pd
 from numpy.typing import NDArray
 
 
+@dataclass
+class Population:
+    """Represents a population dataset of proxy scores, oracle labels, and cost metrics.
+    """
+
+    scores: NDArray[np.float64]
+    labels: NDArray[np.bool_]
+    oracle_costs: dict[str, NDArray[np.float64]] = field(default_factory=dict)
+    proxy_costs: dict[str, NDArray[np.float64]] = field(default_factory=dict)
+
+    def __len__(self) -> int:
+        return len(self.scores)
+
+    def __iter__(self):
+        """Allows unpacking: scores, labels = population."""
+        return iter((self.scores, self.labels))
+
+    def slice(self, idx: NDArray[np.int64]) -> "Population":
+        """Returns a subsampled Population using the given indices."""
+        return Population(
+            scores=self.scores[idx],
+            labels=self.labels[idx],
+            oracle_costs={k: v[idx] for k, v in self.oracle_costs.items()},
+            proxy_costs={k: v[idx] for k, v in self.proxy_costs.items()},
+        )
+
+    def compute_trial_costs(
+        self,
+        oracle_queried_mask: NDArray[np.bool_],
+    ) -> dict[str, dict[str, float]]:
+        """
+        Computes disaggregated trial costs organized hierarchically by model (oracle vs
+        proxy).
+        """
+        pop_size = len(self.scores)
+        num_oracle_calls = float(np.sum(oracle_queried_mask))
+        oracle_dict: dict[str, float] = {
+            "num_calls": num_oracle_calls,
+            "call_rate": num_oracle_calls / pop_size if pop_size > 0 else 0.0,
+        }
+        for k, arr in self.oracle_costs.items():
+            oracle_dict[k] = float(np.sum(arr[oracle_queried_mask]))
+
+        proxy_dict: dict[str, float] = {
+            "num_calls": float(pop_size),
+            "call_rate": 1.0 if pop_size > 0 else 0.0,
+        }
+        for k, arr in self.proxy_costs.items():
+            # Proxy cost is incurred for all items in the population
+            proxy_dict[k] = float(np.sum(arr))
+
+        return {"oracle": oracle_dict, "proxy": proxy_dict}
+
+
+def compute_ideal_oracle_call_rate(
+    proxy_scores: NDArray[np.float64],
+    oracle_outputs: NDArray[np.bool_],
+    gamma_R: float,
+    gamma_P: float,
+) -> float:
+    """
+    Computes the minimum oracle call rate satisfying precision and recall targets.
+
+    Finds the optimal pair of thresholds (tau_upper, tau_lower) on the full
+    population that achieves Recall >= gamma_R and Precision >=
+    gamma_P while minimizing oracle queries.
+
+    Args:
+        proxy_scores: 1D array of proxy confidence scores.
+        oracle_outputs: 1D boolean array of true labels.
+        gamma_R: Minimum required population recall.
+        gamma_P: Minimum required population precision.
+
+    Returns:
+        The theoretical minimum oracle call rate in [0.0, 1.0].
+    """
+    scores = np.asarray(proxy_scores, dtype=np.float64)
+    oracle = np.asarray(oracle_outputs, dtype=bool)
+
+    total_weight = len(scores)
+    total_pos_weight = np.sum(oracle)
+
+    if total_pos_weight == 0 or total_weight == 0:
+        return 0.0
+
+    # Sort population by score ascending
+    sort_idx = np.argsort(scores)
+    s_sorted = scores[sort_idx]
+    o_sorted = oracle[sort_idx]
+
+    pos_counts = np.where(o_sorted, 1.0, 0.0)
+    neg_counts = np.where(~o_sorted, 1.0, 0.0)
+
+    # Group by unique proxy scores
+    unq, unq_inv = np.unique(s_sorted, return_inverse=True)
+    unq_pos = np.bincount(unq_inv, weights=pos_counts)
+    unq_neg = np.bincount(unq_inv, weights=neg_counts)
+    unq_tot = np.bincount(unq_inv)
+
+    M = len(unq)
+
+    TP_suffix = np.zeros(M + 1, dtype=np.float64)
+    TP_suffix[:M] = np.cumsum(unq_pos[::-1])[::-1]
+
+    FP_suffix = np.zeros(M + 1, dtype=np.float64)
+    FP_suffix[:M] = np.cumsum(unq_neg[::-1])[::-1]
+
+    Tot_suffix = np.zeros(M + 1, dtype=np.float64)
+    Tot_suffix[:M] = np.cumsum(unq_tot[::-1])[::-1]
+
+    valid_k = np.where(TP_suffix / total_pos_weight >= gamma_R)[0]
+    if len(valid_k) == 0:
+        return 1.0
+
+    tp = TP_suffix[valid_k]
+    if gamma_P > 0:
+        max_fp = tp * (1.0 - gamma_P) / gamma_P
+    else:
+        max_fp = np.full_like(tp, np.inf)
+
+    # Check if helper model alone satisfies precision
+    fp = FP_suffix[valid_k]
+    if np.any(fp <= max_fp):
+        return 0.0
+
+    neg_FP_suffix = -FP_suffix
+    idx = np.searchsorted(neg_FP_suffix, -max_fp, side="left")
+    k_pos = np.maximum(valid_k + 1, idx)
+
+    valid_pos = k_pos <= M
+    if not np.any(valid_pos):
+        return 1.0
+
+    oracle_w = Tot_suffix[valid_k[valid_pos]] - Tot_suffix[k_pos[valid_pos]]
+    min_oracle_rate = float(np.min(oracle_w / total_weight))
+    return min(1.0, max(0.0, min_oracle_rate))
+
+
 class BaseScenario(ABC):
-    """Abstract base class for synthetic coverage scenarios."""
+    """Abstract base class for coverage scenarios."""
 
     def __init__(self, name: str, description: str):
         self.name = name
@@ -21,9 +160,9 @@ class BaseScenario(ABC):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
-        Generates a synthetic population dataset of proxy scores and oracle labels.
+        Generates a population dataset of proxy scores, oracle labels, and cost metrics.
 
         Args:
             pop_size: Total number of items in the population. If None, uses the
@@ -34,175 +173,9 @@ class BaseScenario(ABC):
                 or gamma_R.
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs):
-                - proxy_scores: 1D array of float proxy confidence scores in [0.0, 1.0].
-                - oracle_outputs: 1D boolean array of true labels (True for positive,
-                  False for negative).
+            A Population object containing scores, labels, and cost metrics.
         """
         pass
-
-    def evaluate_true_recall(
-        self,
-        tau_lower: float,
-        proxy_scores: NDArray[np.float64],
-        oracle_outputs: NDArray[np.bool_],
-    ) -> float:
-        """
-        Calculates population recall for a given lower threshold.
-
-        Items with proxy_score >= tau_lower are retained (either accepted by the proxy
-        or sent to the oracle).
-
-        Args:
-            tau_lower: Lower threshold below which items are dropped.
-            proxy_scores: 1D array of proxy confidence scores.
-            oracle_outputs: 1D boolean array of true labels.
-        """
-        retained = (proxy_scores >= tau_lower) & oracle_outputs
-        total_positives = np.sum(oracle_outputs)
-        return float(np.sum(retained) / total_positives) if total_positives > 0 else 1.0
-
-    def evaluate_true_precision(
-        self,
-        tau_upper: float,
-        tau_lower: float,
-        proxy_scores: NDArray[np.float64],
-        oracle_outputs: NDArray[np.bool_],
-    ) -> float:
-        """
-        Calculates population precision for thresholds.
-
-        Items with score >= tau_upper are accepted by the proxy. Items with
-        tau_lower <= score < tau_upper are sent to the oracle.
-
-        Args:
-            tau_upper: Upper threshold above which items are accepted by the proxy.
-            tau_lower: Lower threshold below which items are dropped.
-            proxy_scores: 1D array of proxy confidence scores.
-            oracle_outputs: 1D boolean array of true labels.
-        """
-        helper_accepted = (proxy_scores >= tau_upper)
-        oracle_sent = (proxy_scores >= tau_lower) & (proxy_scores < tau_upper)
-        oracle_positives = oracle_sent & oracle_outputs
-
-        true_positives = (
-            np.sum(helper_accepted & oracle_outputs)
-            + np.sum(oracle_positives)
-        )
-        predicted_positives = np.sum(helper_accepted) + np.sum(oracle_positives)
-
-        if predicted_positives > 0:
-            return float(true_positives / predicted_positives)
-
-        return 1.0
-
-    def evaluate_oracle_call_rate(
-        self,
-        tau_upper: float,
-        tau_lower: float,
-        proxy_scores: NDArray[np.float64],
-    ) -> float:
-        """
-        Calculates population oracle call rate for given thresholds.
-
-        Items with tau_lower <= score < tau_upper are routed to the expensive oracle.
-
-        Args:
-            tau_upper: Upper threshold above which items are accepted by the proxy.
-            tau_lower: Lower threshold below which items are dropped.
-            proxy_scores: 1D array of proxy confidence scores.
-
-        Returns:
-            Fraction of the population sent to the oracle in [0.0, 1.0].
-        """
-        if tau_upper <= tau_lower:
-            return 0.0
-        oracle_sent = (proxy_scores >= tau_lower) & (proxy_scores < tau_upper)
-        return float(np.mean(oracle_sent)) if len(proxy_scores) > 0 else 0.0
-
-    def compute_ideal_oracle_call_rate(
-        self,
-        proxy_scores: NDArray[np.float64],
-        oracle_outputs: NDArray[np.bool_],
-        gamma_R: float,
-        gamma_P: float,
-    ) -> float:
-        """
-        Computes the minimum oracle call rate satisfying precision and recall targets.
-
-        Finds the optimal pair of thresholds (tau_upper, tau_lower) on the full
-        population that achieves Recall >= gamma_R and Precision >=
-        gamma_P while minimizing oracle queries.
-
-        Args:
-            proxy_scores: 1D array of proxy confidence scores.
-            oracle_outputs: 1D boolean array of true labels.
-            gamma_R: Minimum required population recall.
-            gamma_P: Minimum required population precision.
-
-        Returns:
-            The theoretical minimum oracle call rate in [0.0, 1.0].
-        """
-        scores = np.asarray(proxy_scores, dtype=np.float64)
-        oracle = np.asarray(oracle_outputs, dtype=bool)
-
-        total_weight = len(scores)
-        total_pos_weight = np.sum(oracle)
-
-        if total_pos_weight == 0 or total_weight == 0:
-            return 0.0
-
-        # Sort population by score ascending
-        sort_idx = np.argsort(scores)
-        s_sorted = scores[sort_idx]
-        o_sorted = oracle[sort_idx]
-
-        pos_counts = np.where(o_sorted, 1.0, 0.0)
-        neg_counts = np.where(~o_sorted, 1.0, 0.0)
-
-        # Group by unique proxy scores
-        unq, unq_inv = np.unique(s_sorted, return_inverse=True)
-        unq_pos = np.bincount(unq_inv, weights=pos_counts)
-        unq_neg = np.bincount(unq_inv, weights=neg_counts)
-        unq_tot = np.bincount(unq_inv)
-
-        M = len(unq)
-
-        TP_suffix = np.zeros(M + 1, dtype=np.float64)
-        TP_suffix[:M] = np.cumsum(unq_pos[::-1])[::-1]
-
-        FP_suffix = np.zeros(M + 1, dtype=np.float64)
-        FP_suffix[:M] = np.cumsum(unq_neg[::-1])[::-1]
-
-        Tot_suffix = np.zeros(M + 1, dtype=np.float64)
-        Tot_suffix[:M] = np.cumsum(unq_tot[::-1])[::-1]
-
-        valid_k = np.where(TP_suffix / total_pos_weight >= gamma_R)[0]
-        if len(valid_k) == 0:
-            return 1.0
-
-        tp = TP_suffix[valid_k]
-        if gamma_P > 0:
-            max_fp = tp * (1.0 - gamma_P) / gamma_P
-        else:
-            max_fp = np.full_like(tp, np.inf)
-
-        # Check if helper model alone satisfies precision
-        fp = FP_suffix[valid_k]
-        if np.any(fp <= max_fp):
-            return 0.0
-
-        neg_FP_suffix = -FP_suffix
-        idx = np.searchsorted(neg_FP_suffix, -max_fp, side="left")
-        k_pos = np.maximum(valid_k + 1, idx)
-
-        valid_pos = k_pos <= M
-        if not np.any(valid_pos):
-            return 1.0
-
-        oracle_w = Tot_suffix[valid_k[valid_pos]] - Tot_suffix[k_pos[valid_pos]]
-        min_oracle_rate = float(np.min(oracle_w / total_weight))
-        return min(1.0, max(0.0, min_oracle_rate))
 
 
 class UninformativeProxyFloor(BaseScenario):
@@ -230,7 +203,7 @@ class UninformativeProxyFloor(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population where scores carry minimal ranking signal.
 
@@ -243,7 +216,7 @@ class UninformativeProxyFloor(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -261,7 +234,7 @@ class UninformativeProxyFloor(BaseScenario):
         # Positives have proxy scores uniformly in [0.35, 0.85]
         scores[pos_idx] = rng.uniform(0.35, 0.85, size=n_positives)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class PrecisionTailOverfit(BaseScenario):
@@ -292,7 +265,7 @@ class PrecisionTailOverfit(BaseScenario):
         rng: np.random.Generator | None = None,
         gamma_P: float | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population with an overfit upper tail that scales with target
         precision.
@@ -310,7 +283,7 @@ class PrecisionTailOverfit(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -345,7 +318,7 @@ class PrecisionTailOverfit(BaseScenario):
         scores[n_pos : n_pos + n_neg_low] = rng.uniform(0.0, 0.6, size=n_neg_low)
         scores[n_pos + n_neg_low :] = rng.uniform(0.75, 1.0, size=n_neg_high)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class Benign(BaseScenario):
@@ -370,7 +343,7 @@ class Benign(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a clean population using calibrated bimodal Beta distributions.
 
@@ -383,7 +356,7 @@ class Benign(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -402,7 +375,7 @@ class Benign(BaseScenario):
         scores[:n_pos] = rng.beta(4.0, 0.8, size=n_pos)
         scores[n_pos:] = rng.beta(0.8, 4.0, size=n_neg)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class SemanticJoinNeedle(BaseScenario):
@@ -431,7 +404,7 @@ class SemanticJoinNeedle(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates an extremely sparse population modeling a semantic join operator.
 
@@ -444,7 +417,7 @@ class SemanticJoinNeedle(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -464,7 +437,7 @@ class SemanticJoinNeedle(BaseScenario):
         # Negatives overwhelmingly concentrated near 0.0 (98% < 0.02)
         scores[n_pos:] = rng.beta(0.2, 8.0, size=n_neg)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class DiscreteLexical(BaseScenario):
@@ -492,7 +465,7 @@ class DiscreteLexical(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population modeling a lightweight lexical proxy with tied discrete
         scores.
@@ -507,7 +480,7 @@ class DiscreteLexical(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -534,7 +507,7 @@ class DiscreteLexical(BaseScenario):
             mask[n_zero:] = (assigned_levels == lvl)
             oracle[mask] = rng.random(size=np.sum(mask)) < p
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class PrecisionBoundaryCriticalMargin(BaseScenario):
@@ -566,7 +539,7 @@ class PrecisionBoundaryCriticalMargin(BaseScenario):
         rng: np.random.Generator | None = None,
         gamma_P: float | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population with a sub-target precision band tuned to target
         precision.
@@ -582,7 +555,7 @@ class PrecisionBoundaryCriticalMargin(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -618,7 +591,7 @@ class PrecisionBoundaryCriticalMargin(BaseScenario):
         scores[n1 + n2 :] = rng.uniform(0.9, 1.0, size=n3)
         oracle[n1 + n2 :] = rng.random(size=n3) < high_prec
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class RecallBoundaryCriticalMargin(BaseScenario):
@@ -651,7 +624,7 @@ class RecallBoundaryCriticalMargin(BaseScenario):
         rng: np.random.Generator | None = None,
         gamma_R: float | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population with a sub-target recall boundary tuned to target recall.
 
@@ -667,7 +640,7 @@ class RecallBoundaryCriticalMargin(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -701,7 +674,88 @@ class RecallBoundaryCriticalMargin(BaseScenario):
         # Negatives: distributed across low to moderate scores
         scores[n_pos:] = rng.beta(0.8, 4.0, size=n_neg)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
+
+
+class TrappedHead(BaseScenario):
+    """
+    Trapped Head Distribution.
+
+    Features a deceptive upper score profile where an extreme high-scoring 'head'
+    in [0.95, 1.0] contains 100% true positives, while the immediately preceding
+    upper band in [0.75, 0.95) has precision strictly below target
+    (gamma_P - margin_gap).
+
+    Heuristic sliding windows or aggressive early stopping can prematurely accept a
+    threshold near 0.75-0.85 after encountering early positive runs, pulling the
+    overall accepted region precision below gamma_P.
+    """
+
+    def __init__(self, gamma_P: float = 0.8, margin_gap: float = 0.08):
+        super().__init__(
+            name="trapped_head",
+            description=(
+                f"Trapped head with pure positive tail in [0.95, 1.0] and "
+                f"sub-target band in [0.75, 0.95) at gamma_P - {margin_gap:.3f}, "
+                f"testing sliding-window and early-stopping false acceptance."
+            ),
+        )
+        self.gamma_P = gamma_P
+        self.margin_gap = margin_gap
+
+    def generate_population(
+        self,
+        pop_size: int | None = None,
+        rng: np.random.Generator | None = None,
+        gamma_P: float | None = None,
+        **kwargs,
+    ) -> Population:
+        """
+        Generates a population with a deceptive trapped head score distribution.
+
+        Args:
+            pop_size: Total number of items in the population.
+            rng: NumPy random generator.
+            gamma_P: Primary precision target override passed by the evaluation runner.
+            **kwargs: Additional keyword arguments (ignored).
+
+        Returns:
+            A Population object containing scores, labels, and cost metrics.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+
+        if pop_size is None:
+            pop_size = 100000
+
+        eff_gamma_P = (
+            gamma_P if gamma_P is not None
+            else self.gamma_P
+        )
+
+        # Region 1: 90% uninformative body in [0.0, 0.75] with 1% positives
+        n_body = int(0.90 * pop_size)
+
+        # Region 2: 9.5% deceptive band in [0.75, 0.95] with sub-target precision
+        n_band = int(0.095 * pop_size)
+        band_prec = max(0.05, eff_gamma_P - self.margin_gap)
+
+        # Region 3: 0.5% trapped head in [0.95, 1.0] with 100% precision
+        n_head = pop_size - n_body - n_band
+
+        scores = np.empty(pop_size, dtype=np.float64)
+        oracle = np.zeros(pop_size, dtype=bool)
+
+        scores[:n_body] = rng.uniform(0.0, 0.75, size=n_body)
+        oracle[:n_body] = rng.random(size=n_body) < 0.01
+
+        scores[n_body : n_body + n_band] = rng.uniform(0.75, 0.95, size=n_band)
+        oracle[n_body : n_body + n_band] = rng.random(size=n_band) < band_prec
+
+        scores[n_body + n_band :] = rng.uniform(0.95, 1.0, size=n_head)
+        oracle[n_body + n_band :] = True
+
+        return Population(scores=scores, labels=oracle)
 
 
 class PowerLawTailLeakage(BaseScenario):
@@ -728,7 +782,7 @@ class PowerLawTailLeakage(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population modeling dense retrieval with power-law distractor
         leakage.
@@ -744,7 +798,7 @@ class PowerLawTailLeakage(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -770,7 +824,7 @@ class PowerLawTailLeakage(BaseScenario):
         u = rng.uniform(0.0, 1.0, size=n_neg_distractors)
         scores[n_pos + n_neg_normal :] = 0.95 + 0.05 * (u ** (1.0 / 4.0))
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 class ProxyMiscalibrated(BaseScenario):
@@ -800,7 +854,7 @@ class ProxyMiscalibrated(BaseScenario):
         rng: np.random.Generator | None = None,
         gamma_R: float | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population with a low-score blindspot scaled to target recall.
 
@@ -817,7 +871,7 @@ class ProxyMiscalibrated(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object containing scores, labels, and cost metrics.
         """
         if rng is None:
             rng = np.random.default_rng()
@@ -857,7 +911,7 @@ class ProxyMiscalibrated(BaseScenario):
         oracle[n_main:] = True
         scores[n_main:] = rng.uniform(0.0, 0.2, size=n_blindspot)
 
-        return scores, oracle
+        return Population(scores=scores, labels=oracle)
 
 
 def _read_dataframe(path: Path) -> pd.DataFrame:
@@ -873,8 +927,11 @@ def _read_dataframe(path: Path) -> pd.DataFrame:
         A pandas DataFrame with the loaded dataset.
     """
     if path.is_dir():
-        from datasets import load_from_disk
-        return load_from_disk(str(path)).to_pandas()
+        from datasets import Dataset, load_from_disk
+        ds = load_from_disk(str(path))
+        if not isinstance(ds, Dataset):
+            raise ValueError(f"Loaded dataset is not a Dataset: {type(ds)}")
+        return ds.to_pandas()  # ty: ignore[invalid-return-type]
 
     suffix = path.suffix.lower()
     if suffix in [".csv", ".tsv", ".txt"]:
@@ -919,13 +976,17 @@ class TabularDataset(BaseScenario):
         data_path: str | Path,
         score_col: str = "proxy_score",
         label_col: str = "label",
+        oracle_cost_col: str = "oracle_cost",
+        proxy_cost_col: str = "proxy_cost",
     ):
         super().__init__(name=name, description=description)
         self.data_path = Path(data_path)
         self.score_col = score_col
         self.label_col = label_col
+        self.oracle_cost_col = oracle_cost_col
+        self.proxy_cost_col = proxy_cost_col
         self._df: pd.DataFrame | None = None
-        self._data: tuple[NDArray[np.float64], NDArray[np.bool_]] | None = None
+        self._data: Population | None = None
 
     def get_dataframe(self) -> pd.DataFrame:
         """Loads and returns the cached underlying DataFrame."""
@@ -936,6 +997,39 @@ class TabularDataset(BaseScenario):
                 )
             self._df = _read_dataframe(self.data_path)
         return self._df
+
+    def _extract_costs(
+        self, df: pd.DataFrame, col_name: str
+    ) -> dict[str, NDArray[np.float64]]:
+        """Extracts 1D float arrays for each cost metric in a dictionary or scalar
+        column."""
+        if col_name not in df.columns or len(df) == 0:
+            return {}
+
+        series = df[col_name]
+        sample = None
+        for item in series:
+            if item is not None and not (isinstance(item, float) and np.isnan(item)):
+                sample = item
+                break
+
+        if sample is None:
+            return {}
+
+        if isinstance(sample, dict):
+            cost_df = pd.DataFrame(series.tolist()).fillna(0.0)
+            return {
+                str(col): cost_df[col].to_numpy(dtype=np.float64)
+                for col in cost_df.columns
+            }
+        elif np.issubdtype(series.dtype, np.number):
+            return {col_name: series.fillna(0.0).to_numpy(dtype=np.float64)}
+        else:
+            try:
+                arr = series.astype(float).fillna(0.0).to_numpy(dtype=np.float64)
+                return {col_name: arr}
+            except Exception:
+                return {}
 
     def get_costs(
         self,
@@ -959,33 +1053,22 @@ class TabularDataset(BaseScenario):
         Returns:
             A tuple (proxy_costs, oracle_costs) of float64 1D arrays.
         """
-        df = self.get_dataframe()
-        n = len(df)
-
-        def _extract(col_name: str, default_val: float) -> NDArray[np.float64]:
-            if col_name not in df.columns:
-                return np.full(n, default_val, dtype=np.float64)
-            vals = []
-            for item in df[col_name]:
-                if isinstance(item, dict):
-                    v = item.get(cost_key, default_val)
-                elif isinstance(item, (int, float)):
-                    v = item
-                else:
-                    v = default_val
-                vals.append(float(v) if v is not None else default_val)
-            return np.array(vals, dtype=np.float64)
-
-        proxy_arr = _extract(proxy_cost_col, default_proxy_cost)
-        oracle_arr = _extract(oracle_cost_col, default_oracle_cost)
+        pop = self._load_data()
+        n = len(pop)
+        proxy_arr = pop.proxy_costs.get(
+            cost_key, np.full(n, default_proxy_cost, dtype=np.float64)
+        )
+        oracle_arr = pop.oracle_costs.get(
+            cost_key, np.full(n, default_oracle_cost, dtype=np.float64)
+        )
         return proxy_arr, oracle_arr
 
-    def _load_data(self) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    def _load_data(self) -> Population:
         """
-        Loads and caches proxy scores and oracle labels from the underlying dataset.
+        Loads and caches proxy scores, oracle labels, and cost metrics from the dataset.
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object.
         """
         if self._data is None:
             df = self.get_dataframe()
@@ -1014,7 +1097,16 @@ class TabularDataset(BaseScenario):
                     .isin(["1", "1.0", "true", "t", "yes", "y"])
                     .to_numpy(dtype=bool)
                 )
-            self._data = (scores, oracle)
+
+            oracle_costs = self._extract_costs(df, self.oracle_cost_col)
+            proxy_costs = self._extract_costs(df, self.proxy_cost_col)
+
+            self._data = Population(
+                scores=scores,
+                labels=oracle,
+                oracle_costs=oracle_costs,
+                proxy_costs=proxy_costs,
+            )
         return self._data
 
     def generate_population(
@@ -1022,7 +1114,7 @@ class TabularDataset(BaseScenario):
         pop_size: int | None = None,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    ) -> Population:
         """
         Generates a population by subsampling or loading from a disk-backed dataset.
 
@@ -1033,17 +1125,15 @@ class TabularDataset(BaseScenario):
             **kwargs: Additional keyword arguments (ignored).
 
         Returns:
-            A tuple (proxy_scores, oracle_outputs).
+            A Population object.
         """
-        scores, oracle = self._load_data()
-        if pop_size is None:
-            pop_size = len(scores)
-        if pop_size < len(scores):
-            if rng is None:
-                rng = np.random.default_rng()
-            idx = rng.choice(len(scores), size=pop_size, replace=False)
-            return scores[idx], oracle[idx]
-        return scores.copy(), oracle.copy()
+        pop = self._load_data()
+        if pop_size is None or pop_size >= len(pop):
+            return pop
+        if rng is None:
+            rng = np.random.default_rng()
+        idx = rng.choice(len(pop), size=pop_size, replace=False)
+        return pop.slice(idx)
 
 
 FileDataset = TabularDataset
@@ -1253,7 +1343,8 @@ class ScaleDocGovReport(ScaleDocDataset):
 class _ScenarioRegistry(dict):
     """
     Scenario registry supporting static lookups and dynamic instantiation
-    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1' or 'scaledoc_pubmed_q0_ext').
+    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1' or
+    'scaledoc_pubmed_q0_ext').
     """
 
     def __missing__(self, key: str) -> BaseScenario:
@@ -1273,6 +1364,7 @@ SCENARIOS = _ScenarioRegistry({
     "proxy_miscalibrated": ProxyMiscalibrated(),
     "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin(),
     "recall_boundary_critical_margin": RecallBoundaryCriticalMargin(),
+    "trapped_head": TrappedHead(),
     # Semantic Database Operators / Workloads
     "benign": Benign(),
     "semantic_join_needle": SemanticJoinNeedle(),
@@ -1291,6 +1383,8 @@ SCENARIOS = _ScenarioRegistry({
 
 
 __all__ = [
+    "Population",
+    "compute_ideal_oracle_call_rate",
     "BaseScenario",
     "TabularDataset",
     "FileDataset",
@@ -1302,6 +1396,7 @@ __all__ = [
     "DiscreteLexical",
     "PrecisionBoundaryCriticalMargin",
     "RecallBoundaryCriticalMargin",
+    "TrappedHead",
     "PowerLawTailLeakage",
     "SUPGOnto",
     "SUPGImageNet",

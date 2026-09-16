@@ -13,6 +13,7 @@ from actis import (
 from actis.confseq import GaussianMixtureSupermartingale
 from actis.tuner import AsymptoticCascadeConfSeqs
 from experiments.runners import ACTISRunner
+from experiments.scenarios import Population
 
 
 class TestGaussianMixtureAccumulator:
@@ -341,17 +342,17 @@ class TestACTISRunnerIntegration:
             v_0="auto",
         )
 
+        pop = Population(scores=scores, labels=labels)
         trial_result = runner.run_trial(
-            scores=scores,
-            labels=labels,
+            population=pop,
             gamma_R=0.8,
             gamma_P=0.8,
             delta=0.05,
             rng=rng,
         )
 
-        assert trial_result.total_oracle_calls > 0
-        assert trial_result.total_oracle_calls <= N
+        assert trial_result.cost["oracle"]["num_calls"] > 0
+        assert trial_result.cost["oracle"]["num_calls"] <= N
         assert 0.0 <= trial_result.recall <= 1.0
         assert 0.0 <= trial_result.precision <= 1.0
         assert trial_result.tau_pos is not None

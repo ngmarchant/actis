@@ -8,8 +8,11 @@ Key evaluation dimensions:
 """
 
 import json
+import sys
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from experiments.runners import (
     ACTISRunner,
@@ -223,6 +226,12 @@ def parse_args():
         default=0.50,
         help="Maximum allowable Lindeberg jump-to-variance ratio (default: 0.50)",
     )
+    parser.add_argument(
+        "--include-raw",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Whether to include raw per-trial metrics in output summaries (default: True)",
+    )
     return parser.parse_args(), parser
 
 
@@ -350,6 +359,7 @@ def main():
             delta=args.delta,
             seed=args.seed,
             exp_name=args.exp_name,
+            include_raw=args.include_raw,
         )
         print_comparison_table(suite_res)
         all_records.extend(suite_res)

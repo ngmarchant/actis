@@ -16,7 +16,7 @@ import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,7 +35,11 @@ from actis import ACTIS, ProposalMethod, compute_pr_proposal
 from actis.sampler import PopulationSampler
 from actis.threshold_grid import quantile_power_law_grid
 from actis.tuner import PriorAndTargetVar, compute_prior_and_target_var
-from experiments.scenarios import BaseScenario
+from experiments.scenarios import (
+    BaseScenario,
+    Population,
+    compute_ideal_oracle_call_rate,
+)
 
 _SCALEDOC_DIR = (
     Path(__file__).resolve().parent.parent / "externals" / "ScaleDoc" / "src"
@@ -61,12 +65,12 @@ BoolArray = NDArray[np.bool_]
 
 
 def compute_precision_recall(
-    pred_mask: BoolArray,
+    preds: BoolArray,
     labels: BoolArray
 ) -> tuple[float, float]:
     total_positives = np.sum(labels)
-    tp = np.sum(pred_mask & labels)
-    fp = np.sum(pred_mask & (~labels))
+    tp = np.sum(preds & labels)
+    fp = np.sum(preds & (~labels))
     recall = float(tp / total_positives) if total_positives > 0 else 1.0
     precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 1.0
     return precision, recall
@@ -77,8 +81,7 @@ class TrialResult:
     """Stores the evaluation metrics from a single Monte Carlo trial."""
     recall: float
     precision: float
-    total_oracle_calls: int
-    total_oracle_rate: float
+    cost: dict[str, dict[str, float]] = field(default_factory=dict)
     calibration_calls: int = 0
     deployment_calls: int = 0
     tau_pos: float | None = None
@@ -96,8 +99,7 @@ class BaseFilterRunner(ABC):
     @abstractmethod
     def run_trial(
         self,
-        scores: FloatArray,
-        labels: BoolArray,
+        population: Population,
         gamma_R: float,
         gamma_P: float,
         delta: float,
@@ -107,49 +109,55 @@ class BaseFilterRunner(ABC):
         Executes filtering over a dataset for a single trial.
 
         Args:
-            scores: Proxy scores across the entire dataset.
-            labels: Binary ground-truth oracle outputs across the entire dataset.
+            population: Population object containing proxy scores, oracle labels, and
+                costs.
             gamma_R: Target recall constraint.
             gamma_P: Target precision constraint.
             delta: Allowed failure probability that the constraints are met.
             rng: Random number generator for trial-specific sampling.
 
         Returns:
-            TrialResult containing realized recall, precision, and total oracle cost.
+            TrialResult containing realized recall, precision, and cost metrics.
         """
         pass
 
 
 def evaluate_cascade_trial(
-    scores: FloatArray,
-    labels: BoolArray,
+    population: Population,
     tau_pos: float,
     tau_neg: float,
-    calib_indices: set[int] | list[int] | NDArray[np.int64]
+    calib_indices: set[int] | list[int] | NDArray[np.int64],
 ) -> TrialResult:
-    pop_size = len(scores)
-    pred_mask = (scores >= tau_pos) | ((scores >= tau_neg) & labels)
-    precision, recall = compute_precision_recall(pred_mask, labels)
-
-    # Oracle call accounting: count unique oracle calls across calibration and
-    # deployment
-    unique_calib = set(calib_indices)
-    oracle_sent = (scores >= tau_neg) & (scores < tau_pos)
-    calib_calls = len(unique_calib)
-    pilot_mask = np.zeros(pop_size, dtype=bool)
+    scores = population.scores
+    labels = population.labels
+    pop_size = len(population)
+    calib_set = set(calib_indices)
+    calib_calls = len(calib_set)
+    calib_mask = np.zeros(pop_size, dtype=bool)
     if calib_calls > 0:
-        pilot_mask[list(unique_calib)] = True
-    dep_calls = int(np.sum(oracle_sent & (~pilot_mask)))
-    total_calls = calib_calls + dep_calls
+        calib_mask[list(calib_set)] = True
+
+    # Items not sampled for calibration are routed to cascade thresholds
+    cascade_pred = (scores >= tau_pos) | ((scores >= tau_neg) & labels)
+    # Final predictions: true oracle label for calibration items, cascade prediction for
+    # the rest
+    preds = np.where(calib_mask, labels, cascade_pred)
+    precision, recall = compute_precision_recall(preds, labels)
+
+    oracle_sent = (scores >= tau_neg) & (scores < tau_pos)
+    dep_calls = int(np.sum(oracle_sent & (~calib_mask)))
+    oracle_queried_mask = calib_mask | oracle_sent
+
+    cost = population.compute_trial_costs(oracle_queried_mask)
+
     return TrialResult(
         recall=recall,
         precision=precision,
-        total_oracle_calls=total_calls,
-        total_oracle_rate=total_calls / pop_size if pop_size > 0 else 0.0,
+        cost=cost,
         calibration_calls=calib_calls,
         deployment_calls=dep_calls,
         tau_pos=tau_pos,
-        tau_neg=tau_neg
+        tau_neg=tau_neg,
     )
 
 
@@ -230,14 +238,15 @@ class ACTISRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: FloatArray,
-        labels: BoolArray,
+        population: Population,
         gamma_R: float,
         gamma_P: float,
         delta: float,
         rng: np.random.Generator,
     ) -> TrialResult:
-        pop_size = len(scores)
+        scores = population.scores
+        labels = population.labels
+        pop_size = len(population)
 
         # Resolve auto initial_sample_size
         if self.initial_sample_size == "auto":
@@ -424,11 +433,10 @@ class ACTISRunner(BaseFilterRunner):
                 )
 
         return evaluate_cascade_trial(
-            scores=scores,
-            labels=labels,
+            population=population,
             tau_pos=calib_res.tau_pos,
             tau_neg=calib_res.tau_neg,
-            calib_indices=tuner.seen_indices
+            calib_indices=tuner.seen_indices,
         )
 
 
@@ -444,20 +452,21 @@ class LotusRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: FloatArray,
-        labels: BoolArray,
+        population: Population,
         gamma_R: float,
         gamma_P: float,
         delta: float,
         rng: np.random.Generator,
     ) -> TrialResult:
+        scores = population.scores
+        labels = population.labels
 
         cascade_args = CascadeArgs(
             recall_target=gamma_R,
             precision_target=gamma_P,
             failure_probability=delta,
             sampling_percentage=self.sampling_percentage,
-            cascade_IS_max_sample_range=len(scores),
+            cascade_IS_max_sample_range=len(population),
             cascade_IS_random_seed=int(rng.integers(0, 2**31 - 1)),
         )
 
@@ -482,8 +491,7 @@ class LotusRunner(BaseFilterRunner):
             tau_pos, tau_neg = 1.0, 0.0
 
         return evaluate_cascade_trial(
-            scores=scores,
-            labels=labels,
+            population=population,
             tau_pos=tau_pos,
             tau_neg=tau_neg,
             calib_indices=sample_idx,
@@ -566,8 +574,7 @@ class BargainPRRunner(BaseFilterRunner):
 
     def run_trial(
         self,
-        scores: FloatArray,
-        labels: BoolArray,
+        population: Population,
         gamma_R: float,
         gamma_P: float,
         delta: float,
@@ -578,7 +585,9 @@ class BargainPRRunner(BaseFilterRunner):
                 "BargainPRRunner only supports `gamma_P == gamma_R`."
             )
 
-        pop_size = len(scores)
+        scores = population.scores
+        labels = population.labels
+        pop_size = len(population)
 
         proxy_model = VectorizedProxy(scores)
         oracle_model = VectorizedOracle(labels)
@@ -599,19 +608,25 @@ class BargainPRRunner(BaseFilterRunner):
         data_records = np.arange(pop_size)
         pred_positives = bargain.process(data_records)  # ty: ignore[invalid-argument-type]
 
-        pred_mask = np.zeros(pop_size, dtype=bool)
+        preds = np.zeros(pop_size, dtype=bool)
         if len(pred_positives) > 0:
-            pred_mask[pred_positives] = True
+            preds[pred_positives] = True
 
-        precision, recall = compute_precision_recall(pred_mask, labels)
+        queried_indices = oracle_model.queried_indices
+        oracle_queried_mask = np.zeros(pop_size, dtype=bool)
+        if len(queried_indices) > 0:
+            q_arr = np.fromiter(queried_indices, dtype=int)
+            preds[q_arr] = labels[q_arr]
+            oracle_queried_mask[q_arr] = True
 
-        total_calls = len(oracle_model.queried_indices)
+        precision, recall = compute_precision_recall(preds, labels)
+
+        cost = population.compute_trial_costs(oracle_queried_mask)
 
         return TrialResult(
             recall=recall,
             precision=precision,
-            total_oracle_calls=total_calls,
-            total_oracle_rate=total_calls / pop_size,
+            cost=cost,
         )
 
 
@@ -648,14 +663,15 @@ if _HAS_SCALEDOC:
 
         def run_trial(
             self,
-            scores: FloatArray,
-            labels: BoolArray,
+            population: Population,
             gamma_R: float,
             gamma_P: float,
             delta: float,
             rng: np.random.Generator,
         ) -> TrialResult:
-            pop_size = len(scores)
+            scores = population.scores
+            labels = population.labels
+            pop_size = len(population)
 
             # ScaleDoc only supports a target F1 score gamma_F, not separate precision
             # and recall targets. In order to compare, setting:
@@ -756,8 +772,7 @@ if _HAS_SCALEDOC:
                 tau_neg = float(np.min(scores)) if pop_size > 0 else 0.0
 
             return evaluate_cascade_trial(
-                scores=scores,
-                labels=labels,
+                population=population,
                 tau_pos=tau_pos,
                 tau_neg=tau_neg,
                 calib_indices=calib_samples,
@@ -774,15 +789,14 @@ def summarize_runner_trials(
     delta: float,
     pop_size: int,
     ideal_oracle_rate: float,
+    include_raw: bool = True,
 ) -> dict[str, Any]:
     rec_arr = np.array([r.recall for r in results])
     prec_arr = np.array([r.precision for r in results])
-    rate_arr = np.array([r.total_oracle_rate for r in results])
-    calls_arr = np.array([r.total_oracle_calls for r in results])
     rec_fail = rec_arr < gamma_R
     prec_fail = prec_arr < gamma_P
     joint_fail = rec_fail | prec_fail
-    summary = {
+    summary: dict[str, Any] = {
         "scenario": scenario.name,
         "description": scenario.description,
         "experiment_name": exp_name,
@@ -804,19 +818,31 @@ def summarize_runner_trials(
         "std_true_precision": float(np.std(prec_arr)),
         "5th_percentile_precision": float(np.percentile(prec_arr, 5)),
         "min_true_precision": float(np.min(prec_arr)),
-        "mean_total_oracle_rate": float(np.mean(rate_arr)),
-        "std_total_oracle_rate": float(np.std(rate_arr)),
-        "se_total_oracle_rate": float(np.std(rate_arr) / np.sqrt(len(results))),
-        "5th_percentile_oracle_rate": float(np.percentile(rate_arr, 5)),
-        "25th_percentile_oracle_rate": float(np.percentile(rate_arr, 25)),
-        "75th_percentile_oracle_rate": float(np.percentile(rate_arr, 75)),
-        "95th_percentile_oracle_rate": float(np.percentile(rate_arr, 95)),
-        "mean_total_oracle_calls": float(np.mean(calls_arr)),
         "ideal_oracle_call_rate": float(ideal_oracle_rate),
-        "raw_recalls": rec_arr.tolist(),
-        "raw_precisions": prec_arr.tolist(),
-        "raw_total_oracle_rates": rate_arr.tolist(),
     }
+
+    if include_raw:
+        summary["raw_recalls"] = rec_arr.tolist()
+        summary["raw_precisions"] = prec_arr.tolist()
+
+    # Hierarchical cost summary
+    summary["cost"] = {"oracle": {}, "proxy": {}}
+    if results and results[0].cost:
+        for model_role in ("oracle", "proxy"):
+            metric_keys = results[0].cost.get(model_role, {}).keys()
+            for k in metric_keys:
+                vals = np.array(
+                    [r.cost[model_role].get(k, 0.0) for r in results],
+                    dtype=np.float64,
+                )
+                metric_dict: dict[str, Any] = {
+                    "mean": float(np.mean(vals)),
+                    "std": float(np.std(vals)),
+                    "se": float(np.std(vals) / np.sqrt(len(results))),
+                }
+                if include_raw:
+                    metric_dict["raw"] = vals.tolist()
+                summary["cost"][model_role][k] = metric_dict
 
     tau_poses = [r.tau_pos for r in results if r.tau_pos is not None]
     tau_negs = [r.tau_neg for r in results if r.tau_neg is not None]
@@ -838,7 +864,8 @@ def summarize_runner_trials(
         summary["mean_runtime"] = float(np.mean(runtime_arr))
         summary["std_runtime"] = float(np.std(runtime_arr))
         summary["se_runtime"] = float(np.std(runtime_arr) / np.sqrt(len(runtimes)))
-        summary["raw_runtimes"] = runtime_arr.tolist()
+        if include_raw:
+            summary["raw_runtimes"] = runtime_arr.tolist()
 
     return summary
 
@@ -854,6 +881,7 @@ def run_evaluation_suite(
     delta: float,
     seed: int,
     exp_name: str = "comparative",
+    include_raw: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Executes paired Monte Carlo trials across configured runners on identical population
@@ -863,20 +891,20 @@ def run_evaluation_suite(
     pop_ss, *trial_seeds = ss.spawn(1 + num_trials)
 
     pop_rng = np.random.default_rng(pop_ss)
-    pop_scores, pop_oracle = scenario.generate_population(
+    pop = scenario.generate_population(
         pop_size,
         rng=pop_rng,
         gamma_P=gamma_P,
         gamma_R=gamma_R,
     )
-    actual_pop_size = len(pop_scores)
-    total_pop_positives = np.sum(pop_oracle)
+    actual_pop_size = len(pop)
+    total_pop_positives = np.sum(pop.labels)
 
     if total_pop_positives == 0:
         raise ValueError(f"Scenario '{scenario.name}' generated 0 positives.")
 
-    ideal_oracle_call_rate = scenario.compute_ideal_oracle_call_rate(
-        pop_scores, pop_oracle, gamma_R, gamma_P
+    ideal_oracle_call_rate = compute_ideal_oracle_call_rate(
+        pop.scores, pop.labels, gamma_R, gamma_P
     )
 
     runner_results: dict[str, list[TrialResult]] = {r.name: [] for r in runners}
@@ -897,8 +925,7 @@ def run_evaluation_suite(
 
             t0 = time.perf_counter()
             res = runner.run_trial(
-                scores=pop_scores,
-                labels=pop_oracle,
+                population=pop,
                 gamma_R=gamma_R,
                 gamma_P=gamma_P,
                 delta=delta,
@@ -930,6 +957,7 @@ def run_evaluation_suite(
             delta=delta,
             pop_size=actual_pop_size,
             ideal_oracle_rate=ideal_oracle_call_rate,
+            include_raw=include_raw,
         )
         summary_results.append(summary)
 
@@ -958,12 +986,18 @@ def print_comparison_table(results: list[dict[str, Any]]) -> None:
     )
     print("-" * 90, flush=True)
     for r in results:
+        oracle_rate = (
+            r.get("cost", {})
+            .get("oracle", {})
+            .get("call_rate", {})
+            .get("mean", 0.0)
+        )
         print(fmt_row.format(
             r["runner_params"]["name"],
             r["joint_failure_rate"],
             r["recall_failure_rate"],
             r["precision_failure_rate"],
-            r["mean_total_oracle_rate"] * 100,
+            oracle_rate * 100,
         ), flush=True)
     print(
         f" Ideal Optimal Oracle Call Rate: "
