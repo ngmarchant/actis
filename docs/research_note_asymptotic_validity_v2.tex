@@ -27,7 +27,7 @@
 Asymptotic Gaussian mixture test supermartingales provide an analytically tractable and computationally efficient framework for sequential hypothesis testing and anytime-valid inference in model cascade calibration. Compared to conservative finite-sample betting supermartingales, they enable substantial reductions in expensive ground-truth oracle queries. However, deploying continuous asymptotic confidence sequences in discrete cascade calibration exposes statistical vulnerabilities in the non-asymptotic regime, particularly under rare-event prevalence and non-uniform importance sampling.
 Specifically, when observed failure counts are sparse ($n_{\text{FN}} \le 2$ or $n_{\text{FP}} \le 2$), the continuous Gaussian mixture supermartingale is subject to a discrete Bernoulli tail blind spot, treating ordinary success streaks under the boundary null as multi-$\sigma$ rejection evidence. Furthermore, under importance sampling biased toward high proxy scores, the conditional null failure distribution shifts away from the uniform $1 - \gamma$ baseline. Finally, checking empirical quadratic variation against worst-case jump bounds creates a severe dimensional scale mismatch on accurate thresholds.
 
-In this technical note, we document the design, mathematical formulation, and theoretical grounding of the runtime asymptotic validity diagnostics implemented in ACTIS. First, we formalize the cascade test martingales and the decoupled sequential tuning architecture that independently evaluates recall and precision candidates with safe deterministic fallbacks. Second, we ground sequential stopping in the \emph{Martingale Central Limit Theorem} (Hall and Heyde, 1980) and quantify the finite-sample tail approximation error via non-asymptotic martingale Berry-Esseen bounds (Haeusler, 1988). Third, we present the three runtime diagnostics: (i) quadratic variation accumulation against expected cumulative process variance $v_{0, \text{target}} = n_0 \hat{\sigma}^2$; (ii) a realized jump dispersion bound $\hat{\rho}_{\max} \le 0.50$; and (iii) a \emph{Binomial Consistency Diagnostic} driven by a parameter-free, dataset-agnostic \emph{Partition-Density Policy} for $\eta_R(\tau_{l, i})$ and bivariate $\eta_P(\tau_{u, j}, \tau_{l, i})$. We prove formal properties regarding proposal shift, boundary behavior, and the finite-sample lower envelope property, providing developers with a comprehensive reference for why and how these safeguards operate.
+In this technical note, we document the design, mathematical formulation, and theoretical grounding of the runtime asymptotic validity diagnostics implemented in ACTIS. First, we formalize the cascade test martingales and the decoupled sequential tuning architecture that independently evaluates recall and precision candidates with safe deterministic fallbacks. Second, we ground sequential stopping in the \emph{Martingale Central Limit Theorem} (Hall and Heyde, 1980) and quantify the finite-sample tail approximation error via non-asymptotic martingale Berry-Esseen bounds (Haeusler, 1988). Third, we present the two runtime diagnostics: (i) quadratic variation accumulation against expected cumulative process variance $v_{0, \text{target}} = n_0 \hat{\sigma}^2$; and (ii) a \emph{Binomial Consistency Diagnostic} driven by a parameter-free, dataset-agnostic \emph{Partition-Density Policy} for $\eta_R(\tau_{l, i})$ and bivariate $\eta_P(\tau_{u, j}, \tau_{l, i})$. We discuss how the prior variance floor $v_{0, \text{floor}} \ge \frac{2 b^2}{\log(2/\delta)}$ mathematically eliminates single-step boundary crossings (Howard et al., 2021; Waudby-Smith et al., 2024), rendering heuristic jump dispersion bounds redundant and pathology-prone in high-accuracy regimes. We prove formal properties regarding proposal shift, boundary behavior, and the finite-sample lower envelope property, providing developers with a comprehensive reference for why and how these safeguards operate.
 \end{abstract}
 
 \tableofcontents
@@ -140,7 +140,7 @@ At each tuning step $t$, ACTIS searches the candidate threshold lattice through 
     \begin{equation}\label{eq:fst_recall}
     i^* \coloneqq \max \Big\{ i \in \{1, \dots, K_l\} : \forall k \le i, \; M_t^{(R)}(k) \ge \frac{1}{\delta_R} \;\land\; \mathcal{V}_R(k) = 1 \Big\},
     \end{equation}
-    where $\mathcal{V}_R(k) \in \{0, 1\}$ indicates whether candidate $k$ satisfies all three runtime asymptotic validity diagnostics (variance accumulation, jump dispersion, and proposal-adjusted binomial consistency). At the anchor $i=1$ ($\tau_{l, 1} = 0$), all items are routed to automated acceptance or oracle review, ensuring $\text{Recall} \equiv 1$ deterministically, providing a guaranteed valid baseline ($\mathcal{V}_R(1) \equiv 1$). By stopping at the first non-rejection, Fixed Sequence Testing guarantees family-wise error rate control $\le \delta_R$ across all $K_l$ lower threshold candidates without Bonferroni penalties.
+    where $\mathcal{V}_R(k) \in \{0, 1\}$ indicates whether candidate $k$ satisfies both runtime asymptotic validity diagnostics (variance accumulation and proposal-adjusted binomial consistency). At the anchor $i=1$ ($\tau_{l, 1} = 0$), all items are routed to automated acceptance or oracle review, ensuring $\text{Recall} \equiv 1$ deterministically, providing a guaranteed valid baseline ($\mathcal{V}_R(1) \equiv 1$). By stopping at the first non-rejection, Fixed Sequence Testing guarantees family-wise error rate control $\le \delta_R$ across all $K_l$ lower threshold candidates without Bonferroni penalties.
     
     \item \textbf{Stage 2 (Precision Sequential Testing Scan)}:
     Conditioned on the certified lower threshold $i^*$, candidate upper thresholds $\tau_{u, 1} < \tau_{u, 2} < \dots < \tau_{u, K_u} = 1$ are evaluated in backward order $j = K_u, K_u-1, \dots, 1$ (restricted to $\tau_{u, j} \ge \tau_{l, i^*}$). Because Precision is monotonically non-decreasing in $\tau_u$, scanning backward corresponds to testing an a priori ordered sequence from the conservative anchor ($\tau_{u, K_u} = 1$, where $\text{Precision} \equiv 1$ deterministically) downward toward more aggressive thresholds. The tuner stops at the first candidate where either the precision martingale fails or any asymptotic validity diagnostic fails:
@@ -219,13 +219,19 @@ In the extreme tail ($z \approx \Phi^{-1}(1 - \delta_R) \ge 2.24$), the normal a
 \newpage
 \section{The Diagnostic Framework}
 
-To prevent anti-conservative stopping in the non-asymptotic regime while preserving oracle query efficiency, ACTIS evaluates three complementary runtime diagnostics before certifying any candidate threshold:
+To prevent anti-conservative stopping in the non-asymptotic regime while preserving oracle query efficiency, ACTIS evaluates two complementary runtime diagnostics before certifying any candidate threshold:
 \begin{enumerate}[leftmargin=*]
     \item \textbf{Diagnostic 1 (Variance Accumulation Clock)}: Verifies empirical quadratic variation accumulation against expected cumulative process variance: $V_t \ge 0.05 \cdot v_{0, \text{target}}$ (where $v_{0, \text{target}} \coloneqq n_0 \hat{\sigma}^2$). This enforces Condition~(a) of the Martingale CLT (Section~\ref{sec:clt_theory}), confirming that the martingale has accumulated sufficient variance to justify normal approximations.
-    \item \textbf{Diagnostic 2 (Jump Dispersion Bound)}: Verifies that no single realized increment dominates accumulated quadratic variation: $\hat{\rho}_{\max} \le 0.50$. This enforces Condition~(b) of the Martingale CLT (Uniformly Asymptotic Negligibility), safeguarding against heavy-tailed distortion from extreme importance weights.
-    \item \textbf{Diagnostic 3 (Binomial Consistency Diagnostic)}: Evaluates a one-sided binomial p-value: $p_{\text{binom}} \le \delta$ under a parameter-free partition-density policy. This acts as a discrete lower envelope, preventing streak rejections under sparse failure counts ($n_{\text{FN}} \le 2$ or $n_{\text{FP}} \le 2$) where normal tail approximations break down (Theorem~\ref{thm:berry_esseen}).
+    \item \textbf{Diagnostic 2 (Discrete Bernoulli Safety Envelope)}: Evaluates a one-sided binomial p-value: $p_{\text{binom}} \le \delta$ under a parameter-free partition-density policy. This acts as a discrete lower envelope, preventing streak rejections under sparse failure counts ($n_{\text{FN}} \le 2$ or $n_{\text{FP}} \le 2$) where continuous normal tail approximations break down (Theorem~\ref{thm:berry_esseen}).
 \end{enumerate}
-Each diagnostic polices an orthogonal failure mode. Below, we formalize the anchor exemptions and each diagnostic in turn, concluding in Section~\ref{sec:diagnostic_independence} with a formal proof that all three diagnostics are logically independent and therefore necessary.
+
+\paragraph{Elimination of the Empirical Jump Dispersion Heuristic.}
+In earlier designs, an empirical jump dispersion check ($\hat{\rho}_{\max} \coloneqq \max_{1 \le k \le t}(X_k - \bar{X}_t)^2 / V_t \le 0.50$) was evaluated to heuristically enforce Uniformly Asymptotic Negligibility (Condition~(b) of the Martingale CLT). However, we eliminated this check for two principled reasons:
+\begin{enumerate}[leftmargin=*]
+    \item \emph{Canonical Theoretical Precedent}: In the foundational literature on Asymptotic Confidence Sequences~\cite{waudbysmith2024asymptotic,howard2021}, no empirical jump dispersion check is required. Finite-sample stability against single-jump dominance is mathematically guaranteed by regularizing the Gaussian mixture prior variance via $v_{0, \text{floor}} \ge \frac{2 b^2}{\log(2/\delta)}$~\eqref{eq:v0_floor_formula}. This guarantees that no single jump $X_1 \le b$ can generate test wealth exceeding $(2/\delta)^{1/4} \ll 2/\delta$, providing an unconditional analytical safeguard.
+    \item \emph{Finite-Sample Pathology on High-Accuracy Thresholds}: On candidate thresholds with high true recall ($\gamma_R \ge 0.95$), active increments for true positives are small ($X = +(1 - \gamma_R) w \approx 0.05$), while increments for false negatives are large and negative ($X = -\gamma_R w \approx -0.95$). Because $(-0.95)^2 / (0.05)^2 = 361:1$, observing the very first false negative ($n_{\text{FN}} = 1$) among hundreds of true positives algebraically accounts for $70\%\text{--}99\%$ of the empirical sample variance $V_t$. An empirical ratio test $\hat{\rho}_{\max} \le 0.50$ is algebraically guaranteed to fail whenever $n_{\text{FN}} = 1$, prematurely aborting the sequential fixed-sequence scan and permanently trapping the tuner at overly conservative thresholds. This pathology introduces significant oracle inefficiency without enhancing statistical safety.
+\end{enumerate}
+Below, we formalize the anchor exemptions and the two runtime diagnostics, concluding in Section~\ref{sec:diagnostic_independence} with a formal proof that the two diagnostics are logically independent and mutually complementary.
 
 \subsection{Decoupled Architecture and Anchor Exemption}
 Before running statistical diagnostics, candidate thresholds are inspected for deterministic anchor status:
@@ -289,25 +295,9 @@ M_1 = \exp\left( \frac{X_1^2}{2 v_{0, \text{floor}}} \right) \le \exp\left( \fra
 \end{equation}
 Thus, no single observation can trigger boundary crossing on its own, providing an unconditional safety net against proxy score underestimation.
 
-Diagnostic~1, however, evaluates $v_{0, \text{target}}^{(R)}[i] = n_0 \hat{\sigma}_R^2[i]$ rather than $\max(v_{0, \text{floor}}, v_{0, \text{target}})$. Diagnostic~1 is a rate check verifying Condition~(a) of the Martingale CLT ($[S]_t / s_{n_0}^2 \ge 0.05$). The appropriate rate benchmark is the actual expected variance accumulation rate of the process. In contrast, $v_{0, \text{floor}}$ scales with an isolated jump squared $b_R^2$, independent of horizon $n_0$ and event prevalence. On rare events, $v_{0, \text{floor}}$ can exceed $v_{0, \text{target}}$ by an order of magnitude. Benchmarking Diagnostic~1 against $v_{0, \text{floor}}$ would demand more empirical variance than the process can accumulate over all $n_0$ samples, permanently disabling early stopping for valid candidates. Single-jump dominance is separately guarded by Diagnostic~2.
+Diagnostic~1, however, evaluates $v_{0, \text{target}}^{(R)}[i] = n_0 \hat{\sigma}_R^2[i]$ rather than $\max(v_{0, \text{floor}}, v_{0, \text{target}})$. Diagnostic~1 is a rate check verifying Condition~(a) of the Martingale CLT ($[S]_t / s_{n_0}^2 \ge 0.05$). The appropriate rate benchmark is the actual expected variance accumulation rate of the process. In contrast, $v_{0, \text{floor}}$ scales with an isolated jump squared $b_R^2$, independent of horizon $n_0$ and event prevalence. On rare events, $v_{0, \text{floor}}$ can exceed $v_{0, \text{target}}$ by an order of magnitude. Benchmarking Diagnostic~1 against $v_{0, \text{floor}}$ would demand more empirical variance than the process can accumulate over all $n_0$ samples, permanently disabling early stopping for valid candidates. Single-jump dominance is mathematically prevented by the prior variance floor $v_{0, \text{floor}}$~\eqref{eq:v0_floor_formula}, ensuring that an isolated extreme increment cannot trigger premature rejection.
 
-\subsection{Diagnostic 2: Realized Jump Dispersion Bound}
-To verify that no single realized observation accounts for an excessive fraction of accumulated variance, the maximum jump ratio must satisfy:
-\begin{align}
-\hat{\rho}_{\max}^{(R)}(t) &\coloneqq \frac{\max_{1 \le k \le t} \big(X_{k, i^*}^{(R)} - \bar{X}_{t, i^*}^{(R)}\big)^2}{V_t^{(R)}(i^*)} \le 0.50, \label{eq:check_jump_r} \\
-\hat{\rho}_{\max}^{(P)}(t) &\coloneqq \frac{\max_{1 \le k \le t} \big(X_{k, j^*, i^*}^{(P)} - \bar{X}_{t, j^*, i^*}^{(P)}\big)^2}{V_t^{(P)}(j^*, i^*)} \le 0.50. \label{eq:check_jump_p}
-\end{align}
-
-\paragraph{Theoretical Connection and Limitations.}
-In the Martingale Central Limit Theorem (Hall and Heyde, 1980), asymptotic normality requires increments to be uniformly asymptotically negligible (UAN):
-\begin{equation}
-\frac{\max_{1 \le k \le t} |D_k|}{\sqrt{\langle S \rangle_t}} \xrightarrow{p} 0 \quad \text{as } t \to \infty.
-\end{equation}
-Condition~\eqref{eq:check_jump_r}--\eqref{eq:check_jump_p} is an operational sample-path heuristic ensuring that no single observation accounts for more than half of the accumulated quadratic variation, safeguarding against heavy-tailed shocks from extreme importance weights.
-
-We emphasize that this is a necessary empirical sanity check, but not a sufficient proof of asymptotic validity. Evaluating jump dispersion solely on realized increments cannot detect unobserved jumps from rare classes (e.g., when $n_{\text{FN}} = 0$, every realized increment is small, so $\hat{\rho}_{\max} \approx 0.03 \le 0.50$, even though a single unobserved false negative would dominate variance). This inherent limitation necessitates the third diagnostic.
-
-\subsection{Diagnostic 3: Binomial Consistency with the Partition-Density Policy}
+\subsection{Diagnostic 2: Discrete Bernoulli Safety Envelope with Partition-Density Policy}
 When failure counts are sparse ($n_{\text{FN}} \le 2$ or $n_{\text{FP}} \le 2$), the continuous Gaussian mixture supermartingale is vulnerable to discrete Bernoulli success streaks under the boundary null. To ensure non-asymptotic safety, ACTIS enforces a one-sided binomial consistency test at nominal level $\delta$:
 \begin{align}
 p_{\text{binom}}^{(R)}(i^*) &\coloneqq \sum_{k=0}^{n_{\text{FN}}(i^*)} \binom{n_{\text{act}}^{(R)}}{k} \big(p_{0, R}(i^*)\big)^k \big(1 - p_{0, R}(i^*)\big)^{n_{\text{act}}^{(R)} - k} \le \delta_R, \label{eq:check_binom_r} \\
@@ -461,7 +451,7 @@ For any observed sequence of $n$ active trials containing $k$ failures, define t
 \begin{equation}
 n_{\text{binom}}(k; p_0, \delta) \coloneqq \min \left\{ n \ge k : \sum_{m=0}^k \binom{n}{m} p_0^m (1 - p_0)^{n-m} \le \delta \right\}.
 \end{equation}
-Enforcing Diagnostic~3 guarantees the following finite-sample and asymptotic properties:
+Enforcing Diagnostic~2 guarantees the following finite-sample and asymptotic properties:
 \begin{enumerate}[leftmargin=*]
     \item \textbf{Finite-Sample Lower Bound}: The conjunctive stopping rule ($M_n \ge 1/\delta$ and $p_{\text{binom}} \le \delta$) enforces:
     \begin{equation}
@@ -471,13 +461,13 @@ Enforcing Diagnostic~3 guarantees the following finite-sample and asymptotic pro
     \begin{equation}
     n_{\text{binom}}(0; p_0, \delta) = \left\lceil \frac{\log(1/\delta)}{-\log(1 - p_0)} \right\rceil \approx \frac{\log(1/\delta)}{p_0}.
     \end{equation}
-    When the mixture prior variance satisfies $v_0 < \frac{\log(1/\delta)}{2}$, an unconstrained Gaussian mixture CS with zero variance ($V_n = 0$) would stop prematurely at $n_{\text{Gauss}}(0) \approx \frac{\sqrt{2 v_0 \log(1/\delta)}}{1 - \gamma} < n_{\text{binom}}(0)$. Diagnostic~3 acts as an active clamp, preventing false rejection under short error-free streaks.
-    \item \textbf{Asymptotic Scale Compatibility}: As $k, n \to \infty$, both the binomial criterion and the Gaussian supermartingale require the empirical failure proportion to satisfy $k / n < 1 - \gamma$. Consequently, both sample size thresholds share the identical asymptotic linear growth rate $\lim_{k \to \infty} \frac{n(k)}{k} = \frac{1}{1 - \gamma}$, ensuring that Diagnostic~3 introduces no asymptotic query overhead.
+    When the mixture prior variance satisfies $v_0 < \frac{\log(1/\delta)}{2}$, an unconstrained Gaussian mixture CS with zero variance ($V_n = 0$) would stop prematurely at $n_{\text{Gauss}}(0) \approx \frac{\sqrt{2 v_0 \log(1/\delta)}}{1 - \gamma} < n_{\text{binom}}(0)$. Diagnostic~2 acts as an active clamp, preventing false rejection under short error-free streaks.
+    \item \textbf{Asymptotic Scale Compatibility}: As $k, n \to \infty$, both the binomial criterion and the Gaussian supermartingale require the empirical failure proportion to satisfy $k / n < 1 - \gamma$. Consequently, both sample size thresholds share the identical asymptotic linear growth rate $\lim_{k \to \infty} \frac{n(k)}{k} = \frac{1}{1 - \gamma}$, ensuring that Diagnostic~2 introduces no asymptotic query overhead.
 \end{enumerate}
 \end{proposition}
 
 \begin{proof}
-Item 1 follows directly from the definition of the conjunctive stopping rule: calibration cannot terminate unless Diagnostic~3 is satisfied, which requires $n \ge n_{\text{binom}}(k; p_0, \delta)$ by construction.
+Item 1 follows directly from the definition of the conjunctive stopping rule: calibration cannot terminate unless Diagnostic~2 is satisfied, which requires $n \ge n_{\text{binom}}(k; p_0, \delta)$ by construction.
 
 For Item 2, at $k=0$, the binomial tail probability is $(1 - p_0)^n$. Solving $(1 - p_0)^n \le \delta$ yields $n \ge \log(1/\delta) / (-\log(1 - p_0))$.
 For the Gaussian mixture supermartingale with $k=0$ and uniform weights, all increments are identical positive steps $X_i = 1 - \gamma$, so $S_n = n(1 - \gamma)$ and $V_n = 0$.
@@ -487,61 +477,48 @@ Comparing the two expressions:
 \begin{equation}
 n_{\text{Gauss}}(0) < n_{\text{binom}}(0) \iff \frac{\sqrt{2 v_0 \log(1/\delta)}}{1 - \gamma} < \frac{\log(1/\delta)}{1 - \gamma} \iff v_0 < \frac{\log(1/\delta)}{2}.
 \end{equation}
-When this condition holds (e.g., when $v_0$ is small or constrained by $v_{0, \text{floor}}$ on rare events), the Gaussian CS alone would stop prematurely. Diagnostic~3 enforces the higher threshold $n_{\text{binom}}(0)$, closing the discrete Bernoulli tail blind spot.
+When this condition holds (e.g., when $v_0$ is small or constrained by $v_{0, \text{floor}}$ on rare events), the Gaussian CS alone would stop prematurely. Diagnostic~2 enforces the higher threshold $n_{\text{binom}}(0)$, closing the discrete Bernoulli tail blind spot.
 
 For Item 3, by the Strong Law of Large Numbers, boundary rejection of $H_0: \mu \le 0$ requires the sample mean to be strictly positive:
 \begin{equation}
 \bar{X}_n = \frac{(n - k)(1 - \gamma) - k \gamma}{n} = (1 - \gamma) - \frac{k}{n} > 0 \implies n > \frac{k}{1 - \gamma}.
 \end{equation}
-Similarly, the binomial p-value $\mathbb{P}(\text{Binomial}(n, p_0) \le k) \le \delta$ requires $k/n < p_0 = 1 - \gamma$ as $n \to \infty$. Thus, both $n_{\text{Gauss}}(k)$ and $n_{\text{binom}}(k)$ are asymptotically linear with slope $\frac{1}{1 - \gamma}$. Diagnostic~3 therefore preserves the optimal asymptotic scaling of the sequential cascade tuner.
+Similarly, the binomial p-value $\mathbb{P}(\text{Binomial}(n, p_0) \le k) \le \delta$ requires $k/n < p_0 = 1 - \gamma$ as $n \to \infty$. Thus, both $n_{\text{Gauss}}(k)$ and $n_{\text{binom}}(k)$ are asymptotically linear with slope $\frac{1}{1 - \gamma}$. Diagnostic~2 therefore preserves the optimal asymptotic scaling of the sequential cascade tuner.
 \end{proof}
 
 \subsection{Complementarity and Logical Independence of the Diagnostics}\label{sec:diagnostic_independence}
-A fundamental design question is whether all three diagnostics are necessary, or whether a subset would suffice. Having defined the checks in~\eqref{eq:check_var_r}--\eqref{eq:check_var_p} ($d_1$), \eqref{eq:check_jump_r}--\eqref{eq:check_jump_p} ($d_2$), and~\eqref{eq:check_binom_r}--\eqref{eq:check_binom_p} ($d_3$), we now show that they police mutually orthogonal failure modes: satisfaction of any two diagnostics does not imply satisfaction of the third.
+A fundamental design question is whether both diagnostics are necessary, or whether either would suffice on its own. Having defined the checks in~\eqref{eq:check_var_r}--\eqref{eq:check_var_p} ($d_1$) and~\eqref{eq:check_binom_r}--\eqref{eq:check_binom_p} ($d_2$), we now show that they police mutually orthogonal failure modes: satisfaction of either diagnostic does not imply satisfaction of the other.
 
 \begin{proposition}[\textbf{Mutual Non-Implication of Runtime Diagnostics}]\label{prop:mutual_independence}
-Let $d_1, d_2, d_3 \in \{0, 1\}$ denote boolean indicators that Diagnostic~1, Diagnostic~2, and Diagnostic~3 are satisfied, respectively. The three diagnostics are mutually non-implicative: for any permutation $(i, j, k)$ of $\{1, 2, 3\}$,
+Let $d_1, d_2 \in \{0, 1\}$ denote boolean indicators that Diagnostic~1 and Diagnostic~2 are satisfied, respectively. The two diagnostics are mutually non-implicative:
 \begin{equation}
-(d_j = 1 \;\land\; d_k = 1) \;\not\implies\; d_i = 1.
+d_1 = 1 \;\not\implies\; d_2 = 1 \quad \text{and} \quad d_2 = 1 \;\not\implies\; d_1 = 1.
 \end{equation}
 \end{proposition}
 
 \begin{proof}
-We show mutual non-implication by constructing three realistic finite-sample regimes, each satisfying two diagnostics while failing the third:
+We show mutual non-implication by constructing two realistic finite-sample regimes, each satisfying one diagnostic while failing the other:
 \begin{enumerate}[leftmargin=*]
-    \item \textbf{Case 1: $d_2 = 1$ and $d_3 = 1$, but $d_1 = 0$ (Low-Variance Drift)}:
+    \item \textbf{Case 1: $d_2 = 1$, but $d_1 = 0$ (Low-Variance Drift)}:
     Consider an early stopping sample path at step $t \ll n_0$ (e.g., $t = 15$) where all realized observations have equal weights $w_k = 1$ and identical positive outcomes ($X_k = 1 - \gamma_R$).
-    Because all increments are identical, deviations from the mean are zero, yielding $\hat{\rho}_{\max} \equiv 0 \le 0.50$, so Diagnostic~2 passes ($d_2 = 1$).
-    Furthermore, on a threshold with high proxy partition density where $p_0 \ge 1 - \gamma_R$, an error-free streak of $15$ observations yields a binomial p-value $p_{\text{binom}} = (1 - p_0)^{15} \le \delta$, so Diagnostic~3 passes ($d_3 = 1$).
+    On a threshold with high proxy partition density where $p_0 \ge 1 - \gamma_R$, an error-free streak of $15$ observations yields a binomial p-value $p_{\text{binom}} = (1 - p_0)^{15} \le \delta$, so Diagnostic~2 passes ($d_2 = 1$).
     However, accumulated empirical variance is $V_t = \sum_{k=1}^t (X_k - \bar{X}_t)^2 = 0$.
     Because the expected process variance over horizon $n_0 = 1000$ is $v_{0, \text{target}} = n_0 \hat{\sigma}^2 > 0$, the ratio $V_t / v_{0, \text{target}} = 0 < 0.05$, so Diagnostic~1 fails ($d_1 = 0$).
     Here, the continuous martingale statistic $M_t$ crossed the rejection boundary purely through deterministic drift under zero variance. The Martingale CLT condition $[S]_t / s_{n_0}^2 \xrightarrow{p} \eta^2 > 0$ is unfulfilled. Diagnostic~1 is uniquely required to block premature stopping under this condition.
 
-    \item \textbf{Case 2: $d_1 = 1$ and $d_3 = 1$, but $d_2 = 0$ (Heavy-Tailed Importance Weight Shock)}:
-    Consider a sample path at moderate $t$ where the binomial test passes ($d_3 = 1$).
-    Suppose a single sample $k^*$ is drawn with an extreme importance weight $w_{k^*} \gg 1$ (e.g., $w_{k^*} = 40$ while typical weights are $w_k \approx 1$), producing an increment $X_{k^*} \gg \bar{X}_t$.
-    This single increment contributes $(X_{k^*} - \bar{X}_t)^2$ to $V_t$, pushing $V_t \ge 0.05 \cdot v_{0, \text{target}}$, so Diagnostic~1 passes ($d_1 = 1$).
-    Because Diagnostic~3 evaluates unweighted event counts $n_{\text{act}}$ and $k$, it is invariant to weight spikes, so Diagnostic~3 remains satisfied ($d_3 = 1$).
-    However, the single outlier accounts for most of the empirical variance:
-    \begin{equation}
-    \hat{\rho}_{\max} = \frac{(X_{k^*} - \bar{X}_t)^2}{V_t} \approx 0.85 > 0.50,
-    \end{equation}
-    so Diagnostic~2 fails ($d_2 = 0$).
-    Here, the empirical distribution of increments is severely skewed and bimodal, violating the Lindeberg condition. Rejection is driven by a point mass shock rather than continuous diffusion. Diagnostic~2 is uniquely required to intercept this shock.
-
-    \item \textbf{Case 3: $d_1 = 1$ and $d_2 = 1$, but $d_3 = 0$ (Discrete Bernoulli Tail Blind Spot)}:
+    \item \textbf{Case 2: $d_1 = 1$, but $d_2 = 0$ (Discrete Bernoulli Tail Blind Spot)}:
     Consider a candidate threshold evaluated on a dataset where failures are rare under the null hypothesis ($p_0 = 0.005$).
-    Suppose calibration runs for $t = 80$ steps, accumulating variance smoothly across observations such that $V_t \ge 0.05 \cdot v_{0, \text{target}}$ ($d_1 = 1$) and no individual jump exceeds $20\%$ of variance ($\hat{\rho}_{\max} = 0.20 \le 0.50$, so $d_2 = 1$).
+    Suppose calibration runs for $t = 80$ steps, accumulating variance smoothly across observations such that $V_t \ge 0.05 \cdot v_{0, \text{target}}$ ($d_1 = 1$).
     Suppose zero failures are observed in the sample ($n_{\text{FN}} = 0$, so $n_{\text{act}} = 80$).
     Because the continuous Gaussian mixture supermartingale models $S_t$ as Brownian motion with drift, 80 consecutive positive increments cause the Gaussian test statistic to cross $M_t \ge 1/\delta$, prompting rejection.
     However, under the discrete null distribution $\text{Binomial}(80, p_0 = 0.005)$, the probability of observing zero failures is:
     \begin{equation}
     p_{\text{binom}} = (1 - 0.005)^{80} \approx 0.669 \gg \delta = 0.05.
     \end{equation}
-    Consequently, Diagnostic~3 fails ($d_3 = 0$).
-    Observing zero failures in 80 trials is an ordinary event under the null ($67\%$ probability); it provides insufficient evidence of boundary violation. The continuous supermartingale falsely rejects $H_0$ due to the discrete Bernoulli tail approximation error quantified by Theorem~\ref{thm:berry_esseen}. Diagnostic~3 is uniquely required to block this false rejection.
+    Consequently, Diagnostic~2 fails ($d_2 = 0$).
+    Observing zero failures in 80 trials is an ordinary event under the null ($67\%$ probability); it provides insufficient evidence of boundary violation. The continuous supermartingale falsely rejects $H_0$ due to the discrete Bernoulli tail approximation error quantified by Theorem~\ref{thm:berry_esseen}. Diagnostic~2 is uniquely required to block this false rejection.
 \end{enumerate}
-Cases 1--3 demonstrate that no two diagnostics imply the third. All three diagnostics are necessary to ensure anytime-valid coverage across candidate thresholds and sampling distributions.
+Cases 1 and 2 demonstrate that neither diagnostic implies the other. Both diagnostics are necessary and complementary to ensure anytime-valid coverage across candidate thresholds and sampling distributions.
 \end{proof}
 
 \subsection{Comprehensive Accounting: Theoretical Guarantees, Fallibility, and Proxy Reliance}\label{sec:safeguard_taxonomy}
@@ -559,8 +536,7 @@ Jump bounds $b_R, b_P$ & Increment bound & Exact & Deterministic bounds derived 
 Prior variance $v_0$ & Surrogate $\hat{\sigma}^2$ & Clamped & Target $v_{0, \text{target}}$ bounded below by $v_{0, \text{floor}}$ and above by boundary null ceiling \\ \midrule
 Gaussian CS ($M_t$) & -- & Asymptotic & Continuous diffusion approximation; discrete Berry-Esseen tail error at small $t$ \\
 Diag.~1 rate check & Benchmark $v_{0, \text{target}}$ & Heuristic & Benchmark $v_{0, \text{target}}$ capped by null boundary limits; $5\%$ cutoff is empirical \\
-Diag.~2 jump bound & -- & Heuristic & Evaluates realized increments only; blind to unobserved rare jumps \\
-Diag.~3 binomial check & Proposal ratio $\hat{\eta}$ & Heuristic & Evaluated repeatedly over time; uncorrected $\delta_P = \delta/2$; binomial sampling misspecification \\ \bottomrule
+Diag.~2 binomial check & Proposal ratio $\hat{\eta}$ & Heuristic & Evaluated repeatedly over time; uncorrected $\delta_P = \delta/2$; binomial sampling misspecification \\ \bottomrule
 \end{tabular}
 \caption{Comprehensive taxonomy of safeguards in ACTIS, contrasting exact theoretical guarantees, asymptotic limits, and heuristic runtime diagnostics with their potential failure modes.}
 \label{tab:safeguard_taxonomy}
@@ -578,7 +554,7 @@ Diag.~3 binomial check & Proposal ratio $\hat{\eta}$ & Heuristic & Evaluated rep
 The Gaussian mixture supermartingale ($M_t$) provides time-uniform error control under the asymptotic regime where increments behave as continuous diffusion (Robbins, 1970; Howard et al., 2021). By Ville's inequality, $\mathbb{P}(\exists t \ge 1: M_t \ge 1/\alpha) \le \alpha$. However, in finite samples, increments are discrete bounded jumps. The finite-sample Berry-Esseen tail approximation error (Theorem~\ref{thm:berry_esseen}) allows the continuous martingale to falsely reject $H_0$ under early error-free streaks ($n_{\text{FN}} = 0$ or $n_{\text{FP}} = 0$).
 
 \paragraph{Heuristic Nature and Fallibility of the Runtime Diagnostics.}
-We emphasize that \textbf{none of the three runtime diagnostics provides an unconditional theoretical guarantee on its own; all three are fallible heuristic checks}:
+We emphasize that \textbf{neither runtime diagnostic provides an unconditional theoretical guarantee on its own; both are fallible heuristic checks}:
 \begin{enumerate}[leftmargin=*]
     \item \textbf{Diagnostic~1 (Variance Accumulation Clock)}:
     Diagnostic~1 checks whether empirical quadratic variation satisfies $V_t \ge 0.05 \cdot v_{0, \text{target}}$. This check has two vulnerabilities:
@@ -586,30 +562,24 @@ We emphasize that \textbf{none of the three runtime diagnostics provides an unco
         \item \emph{Surrogate Benchmark Underestimation}: Because $v_{0, \text{target}} = n_0 \hat{\sigma}^2$ is estimated using proxy scores as label surrogates, severe underestimation of positive prevalence produces $\hat{\sigma}^2 \approx 0$, setting an artificially lenient benchmark.
         \item \emph{Heuristic Threshold}: Demanding $5\%$ cumulative variance accumulation is an operational rule of thumb, not a theorem guaranteeing that the boundary crossing probability is bounded by $\delta$.
     \end{itemize}
-    Crucially, under-benchmarking by Diagnostic~1 is \textbf{actively compensated by Diagnostic~3}: stopping is impossible unless $n \ge n_{\text{binom}}(k; p_0, \delta) \ge n_{\text{binom}}(0) \approx \frac{\log(1/\delta)}{p_0}$ (typically $70\text{--}90$ samples), blocking premature stopping even if Diagnostic~1 is satisfied on sample $t=2$. Conversely, potential overestimation of process variance by uncalibrated proxies is strictly clamped by the exact boundary null caps and theoretical ceiling ($v_{0, \text{target}} \le n_0 (1 - \gamma) w_{\max}$), ensuring Diagnostic~1 does not permanently block stopping on valid thresholds.
+    Crucially, under-benchmarking by Diagnostic~1 is \textbf{actively compensated by Diagnostic~2}: stopping is impossible unless $n \ge n_{\text{binom}}(k; p_0, \delta) \ge n_{\text{binom}}(0) \approx \frac{\log(1/\delta)}{p_0}$ (typically $70\text{--}90$ samples), blocking premature stopping even if Diagnostic~1 is satisfied on sample $t=2$. Conversely, potential overestimation of process variance by uncalibrated proxies is strictly clamped by the exact boundary null caps and theoretical ceiling ($v_{0, \text{target}} \le n_0 (1 - \gamma) w_{\max}$), ensuring Diagnostic~1 does not permanently block stopping on valid thresholds.
 
-    \item \textbf{Diagnostic~2 (Jump Dispersion Bound)}:
-    Diagnostic~2 checks that $\hat{\rho}_{\max} \le 0.50$, verifying that no single realized increment accounts for more than half of the accumulated quadratic variation.
+    \item \textbf{Diagnostic~2 (Binomial Consistency Diagnostic)}:
+    Diagnostic~2 evaluates a one-sided binomial p-value $p_{\text{binom}} \le \delta$ under partition-adjusted parameter $p_0$. The proposal ratio $\hat{\eta} = \min(1, \bar{q}_{< \tau_l}/\bar{q}_{\ge \tau_l})$ is computed strictly from the known sampling proposal $q(x)$ and partition counts, providing a defensive safeguard on aggressive thresholds (Proposition~\ref{prop:aggressive_defense}). However, as a formal statistical test, Diagnostic~2 is subject to three significant theoretical limitations:
     \begin{itemize}
-        \item \emph{Fallibility}: Diagnostic~2 inspects \emph{only realized increments}. On rare-event datasets where a failure class has not yet appeared (e.g., $n_{\text{FN}} = 0$), all realized increments are small and $\hat{\rho}_{\max} \approx 0.03 \le 0.50$ passes easily, despite the fact that an unobserved false negative would dominate process variance.
-    \end{itemize}
-
-    \item \textbf{Diagnostic~3 (Binomial Consistency Diagnostic)}:
-    Diagnostic~3 evaluates a one-sided binomial p-value $p_{\text{binom}} \le \delta$ under partition-adjusted parameter $p_0$. The proposal ratio $\hat{\eta} = \min(1, \bar{q}_{< \tau_l}/\bar{q}_{\ge \tau_l})$ is computed strictly from the known sampling proposal $q(x)$ and partition counts, providing a defensive safeguard on aggressive thresholds (Proposition~\ref{prop:aggressive_defense}). However, as a formal statistical test, Diagnostic~3 is subject to three significant theoretical limitations:
-    \begin{itemize}
-        \item \emph{Repeated Sequential Testing (Optional Stopping)}: Diagnostic~3 evaluates a fixed-sample binomial test at every calibration step $t$. Unlike test supermartingales, repeated testing of a fixed-sample p-value over time without alpha-spending is technically prone to type I error inflation over long horizons.
-        \item \emph{Uncorrected Precision Significance Level ($\delta_P = \delta/2$)}: In the precision martingale, candidate upper thresholds are tested conditionally on the data-dependent lower threshold $i^*$, requiring a Bonferroni correction $\alpha_P = \delta / (2 K_l)$ to guarantee family-wise error control across all $K_l$ candidate lower thresholds. In Diagnostic~3, however, setting $\delta_P = \delta / (2 K_l)$ experimentally proved excessively conservative, demanding an unviable sample size before stopping. Thus, ACTIS evaluates Diagnostic~3 at $\delta_P = \delta / 2$ without the $1/K_l$ correction, treating it as an uncorrected heuristic floor.
+        \item \emph{Repeated Sequential Testing (Optional Stopping)}: Diagnostic~2 evaluates a fixed-sample binomial test at every calibration step $t$. Unlike test supermartingales, repeated testing of a fixed-sample p-value over time without alpha-spending is technically prone to type I error inflation over long horizons.
+        \item \emph{Uncorrected Precision Significance Level ($\delta_P = \delta/2$)}: In the precision martingale, candidate upper thresholds are tested conditionally on the data-dependent lower threshold $i^*$, requiring a Bonferroni correction $\alpha_P = \delta / (2 K_l)$ to guarantee family-wise error control across all $K_l$ candidate lower thresholds. In Diagnostic~2, however, setting $\delta_P = \delta / (2 K_l)$ experimentally proved excessively conservative, demanding an unviable sample size before stopping. Thus, ACTIS evaluates Diagnostic~2 at $\delta_P = \delta / 2$ without the $1/K_l$ correction, treating it as an uncorrected heuristic floor.
         \item \emph{Binomial Likelihood Misspecification}: Observations are sampled without replacement and with non-uniform importance weights, so trials are not strictly i.i.d. $\text{Binomial}(n, p_0)$ draws.
     \end{itemize}
 \end{enumerate}
 
 \paragraph{The Conjunctive Principle: Defense-in-Depth.}
 Why does ACTIS achieve empirical validity despite each individual diagnostic being fallible?
-Calibration terminates only when **all four criteria** are simultaneously satisfied:
+Calibration terminates only when \textbf{all three criteria} are simultaneously satisfied:
 \begin{equation}
-\text{Stop at } t \iff M_t \ge 1/\alpha \;\land\; d_1(t) = 1 \;\land\; d_2(t) = 1 \;\land\; d_3(t) = 1.
+\text{Stop at } t \iff M_t \ge 1/\alpha \;\land\; d_1(t) = 1 \;\land\; d_2(t) = 1.
 \end{equation}
-The continuous Gaussian supermartingale provides time-uniform error control in the asymptotic regime; Diagnostic~1 ensures variance accumulation; Diagnostic~2 blocks single-step heavy-tailed shocks; and Diagnostic~3 clamps the discrete small-sample tail. Their intersection forms a defense-in-depth where each check covers the blind spots of the others.
+The continuous Gaussian supermartingale provides time-uniform error control in the asymptotic regime; Diagnostic~1 ensures variance accumulation; and Diagnostic~2 clamps the discrete small-sample tail. Their intersection forms a defense-in-depth where each check covers the blind spots of the other.
 
 \newpage
 \section{Computational Complexity and Operational Summary}
@@ -623,7 +593,7 @@ Evaluating the Partition-Density Policy and asymptotic diagnostics adds zero obs
 \end{enumerate}
 
 \subsection{Operational Summary}
-Table~\ref{tab:diagnostic_summary} summarizes the three diagnostics implemented in ACTIS, their theoretical rationale, failure modes prevented, and fallback behavior.
+Table~\ref{tab:diagnostic_summary} summarizes the runtime diagnostics implemented in ACTIS, their theoretical rationale, failure modes prevented, and fallback behavior.
 
 \begin{table}[ht]
 \centering
@@ -637,9 +607,7 @@ Diagnostic Check & Mathematical Criterion & Theoretical Target & Fallback Action
 \midrule
 \textbf{1. Variance Accumulation} & $V_t \ge 0.05 \cdot v_{0, \text{target}}$ where $v_{0, \text{target}} = n_0 \hat{\sigma}^2$ & Martingale CLT quadratic variation $[S]_t \sim s_t^2$; resolves drift scale mismatch & Revert $i^* \leftarrow 1$ (recall) or $j^* \leftarrow K_u$ (precision) \\
 \midrule
-\textbf{2. Jump Dispersion} & $\hat{\rho}_{\max} \le 0.50$ & Uniformly Asymptotic Negligibility (UAN); guards against weight shocks & Revert $i^* \leftarrow 1$ (recall) or $j^* \leftarrow K_u$ (precision) \\
-\midrule
-\textbf{3. Binomial Consistency} & $p_{\text{binom}} \le \delta$ with partition densities $\hat{\eta}_R, \hat{\eta}_P$ & Discrete lower envelope; guards against streak rejections & Revert $i^* \leftarrow 1$ (recall) or $j^* \leftarrow K_u$ (precision) \\
+\textbf{2. Binomial Consistency} & $p_{\text{binom}} \le \delta$ with partition densities $\hat{\eta}_R, \hat{\eta}_P$ & Discrete lower envelope; guards against streak rejections & Revert $i^* \leftarrow 1$ (recall) or $j^* \leftarrow K_u$ (precision) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -709,6 +677,11 @@ J.~Ville.
 I.~Waudby-Smith and A.~Ramdas.
 \newblock Estimating means of bounded random variables by betting.
 \newblock \emph{Journal of the Royal Statistical Society Series B: Statistical Methodology}, 86(1):1--27, 2024.
+
+\bibitem{waudbysmith2024asymptotic}
+I.~Waudby-Smith, D.~Arbour, R.~Sinha, E.~H.~Kennedy, and A.~Ramdas.
+\newblock Time-uniform central limit theory and asymptotic confidence sequences.
+\newblock \emph{The Annals of Statistics}, 52(4):1687--1711, 2024.
 \end{thebibliography}
 
 \end{document}

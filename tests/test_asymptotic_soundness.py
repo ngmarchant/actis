@@ -366,7 +366,6 @@ class TestRefinedAsymptoticDiagnostics:
         recall_diag = AsymptoticValidityDiagnostics(
             v_t=0.01,
             v_0=0.10,
-            rho_max=0.10,
             num_true_positives=72,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -376,7 +375,6 @@ class TestRefinedAsymptoticDiagnostics:
         precision_diag = AsymptoticValidityDiagnostics(
             v_t=0.01,
             v_0=0.10,
-            rho_max=0.10,
             num_true_positives=72,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -395,7 +393,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_low = AsymptoticValidityDiagnostics(
             v_t=0.002,
             v_0=0.10,
-            rho_max=0.10,
             num_true_positives=72,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -406,36 +403,6 @@ class TestRefinedAsymptoticDiagnostics:
         issues = diag_low.diagnose()
         assert any("Recall empirical variance ratio" in s for s in issues)
 
-    def test_lindeberg_jump_dispersion(self):
-        # When a single observation accounts for 60% of variance (rho_max = 0.60 > 0.50)
-        diag_jump = AsymptoticValidityDiagnostics(
-            v_t=1.0,
-            v_0=1.0,
-            rho_max=0.60,
-            num_true_positives=72,
-            num_false_negatives_or_positives=0,
-            null_failure_prob=0.05,
-            metric="Recall",
-            delta=0.025,
-        )
-        assert diag_jump.is_valid() is False
-        issues = diag_jump.diagnose()
-        assert any("violates Lindeberg condition" in s for s in issues)
-        assert any("Recall maximum jump dispersion" in s for s in issues)
-
-        # When rho_max <= 0.50 (e.g. 0.45), should pass
-        diag_good_jump = AsymptoticValidityDiagnostics(
-            v_t=1.0,
-            v_0=1.0,
-            rho_max=0.45,
-            num_true_positives=72,
-            num_false_negatives_or_positives=0,
-            null_failure_prob=0.05,
-            metric="Recall",
-            delta=0.025,
-        )
-        assert diag_good_jump.is_valid() is True
-
     def test_exact_binomial_consistency(self):
         # Target: gamma_R = 0.95, delta_R = 0.025, p0 = 1 - gamma_R = 0.05
         # 1. At k_FN = 0, n_TP = 43 gives p = 0.95^43 = 0.1102 > 0.025
@@ -443,7 +410,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_43 = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=43,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -459,7 +425,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_71 = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=71,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -473,7 +438,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_72 = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=72,
             num_false_negatives_or_positives=0,
             null_failure_prob=0.05,
@@ -487,7 +451,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_108 = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=108,
             num_false_negatives_or_positives=1,
             null_failure_prob=0.05,
@@ -500,7 +463,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_109 = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=109,
             num_false_negatives_or_positives=1,
             null_failure_prob=0.05,
@@ -515,7 +477,6 @@ class TestRefinedAsymptoticDiagnostics:
         diag_p_fail = AsymptoticValidityDiagnostics(
             v_t=1.0,
             v_0=1.0,
-            rho_max=0.10,
             num_true_positives=72,
             num_false_negatives_or_positives=5,
             null_failure_prob=0.05,

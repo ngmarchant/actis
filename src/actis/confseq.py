@@ -138,17 +138,6 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
             return 0.0
         return max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
 
-    @property
-    def rho_max(self) -> float:
-        r"""Maximum jump dispersion ratio
-        $\rho_{\max} = \max_i (x_i - \bar{x}_t)^2 / V_t$.
-        """
-        if self.v_t <= 0.0 or self.t == 0:
-            return 0.0
-        mean = self.running_sum / self.t
-        max_dev_sq = max((self.x_min - mean) ** 2, (self.x_max - mean) ** 2)
-        return float(max_dev_sq / self.v_t)
-
     def log_wealth(self) -> float:
         if self.t < 2:
             return 0.0

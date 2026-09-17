@@ -324,7 +324,6 @@ def main():
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
             variance_ratio_bound=args.variance_ratio_bound,
-            max_jump_ratio_bound=args.max_jump_ratio_bound,
         ),
         ACTISRunner(
             name="actis_adaptive_asymptotic",
@@ -341,7 +340,6 @@ def main():
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
             variance_ratio_bound=args.variance_ratio_bound,
-            max_jump_ratio_bound=args.max_jump_ratio_bound,
         ),
         ACTISRunner(
             name="actis_adaptive",

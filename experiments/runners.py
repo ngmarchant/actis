@@ -252,10 +252,6 @@ class ACTISRunner(BaseFilterRunner):
     """Bound on the ratio of the variance of the test statistic to the variance of the
     null distribution. This is used to control the false discovery rate."""
 
-    max_jump_ratio_bound: float = 0.50
-    """Bound on the ratio of the maximum jump in the test statistic to the variance of
-    the null distribution. This is used to control the false discovery rate."""
-
     def __post_init__(self):
         if self.name == "":
             self.name = "actis_adaptive" if self.adaptive else "actis_static"
@@ -405,7 +401,6 @@ class ACTISRunner(BaseFilterRunner):
             max_weight_ge_upper=max_weight_ge_upper,
             enable_asymptotic_protection=self.enable_asymptotic_protection,
             variance_ratio_bound=self.variance_ratio_bound,
-            max_jump_ratio_bound=self.max_jump_ratio_bound,
         )
 
         def get_batch_size(requested: int) -> int:

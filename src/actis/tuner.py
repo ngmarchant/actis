@@ -23,14 +23,12 @@ class AsymptoticValidityDiagnostics:
     guarantee is reliable."""
     v_t: float
     v_0: float
-    rho_max: float
     num_true_positives: int
     num_false_negatives_or_positives: int
     null_failure_prob: float
     metric: str = field(default="Recall")
     thresholds: tuple[float, ...] | None = None
     variance_ratio_bound: float = 0.05
-    max_jump_ratio_bound: float = 0.5
     delta: float = 0.05
     p_value: float | None = None
 
@@ -52,12 +50,6 @@ class AsymptoticValidityDiagnostics:
             issues.append(
                 f"{self.metric} empirical variance ratio V_t / v_0 is low "
                 f"({ratio:.4g} < {self.variance_ratio_bound:.4g})."
-            )
-        if self.rho_max > self.max_jump_ratio_bound:
-            issues.append(
-                f"{self.metric} maximum jump dispersion ratio rho_max is high "
-                f"({self.rho_max:.4g} > {self.max_jump_ratio_bound:.4g}, "
-                f"violates Lindeberg condition)."
             )
         n_active = self.num_true_positives + self.num_false_negatives_or_positives
         self.p_value = float(
@@ -1005,7 +997,6 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         thresholds: NDArray[np.float64],
         thresholds_upper: NDArray[np.float64],
         v_0: float | PriorAndTargetVar = 0.01,
-        max_jump_ratio_bound: float = 0.50,
         variance_ratio_bound: float = 0.05,
     ) -> None:
         r"""
@@ -1023,9 +1014,6 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
                 for the upper threshold. If None, defaults to `thresholds`.
             v_0: Prior variance for the Gaussian mixture supermartingale. Can be a
                 scalar float or a `PriorAndTargetVar` instance. Defaults to 0.01.
-            max_jump_ratio_bound: Maximum allowable Hall & Heyde Lindeberg
-                jump-to-variance ratio $\rho_{\max} = \max_i (X_i - \bar{X})^2 / V_t$.
-                Defaults to 0.50.
             variance_ratio_bound: Maximum allowable ratio of cumulative process
                 variance to prior variance $V_t / v_0$. Defaults to 0.05.
         """
@@ -1034,7 +1022,6 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             self.v_0 = v_0
         else:
             self.v_0 = PriorAndTargetVar(prior_R=v_0)
-        self.max_jump_ratio_bound = max_jump_ratio_bound
         self.variance_ratio_bound = variance_ratio_bound
 
         # Update when adding samples to speed up asymptotic diagnostics
@@ -1132,14 +1119,12 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         return AsymptoticValidityDiagnostics(
             v_t=mart.v_t,
             v_0=self.v_0.target_R(k_lower),
-            rho_max=mart.rho_max,
             num_true_positives=int(num_true_positives),
             num_false_negatives_or_positives=int(num_false_negatives),
             null_failure_prob=null_failure_prob,
             metric="Recall",
             thresholds=(tau_lower,),
             variance_ratio_bound=self.variance_ratio_bound,
-            max_jump_ratio_bound=self.max_jump_ratio_bound,
             delta=self.delta_R,
         )
 
@@ -1168,14 +1153,12 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         return AsymptoticValidityDiagnostics(
             v_t=mart.v_t,
             v_0=v_0_target,
-            rho_max=mart.rho_max,
             num_true_positives=int(num_true_positives),
             num_false_negatives_or_positives=int(num_false_positives),
             null_failure_prob=null_failure_prob,
             metric="Precision",
             thresholds=(tau_lower, tau_upper),
             variance_ratio_bound=self.variance_ratio_bound,
-            max_jump_ratio_bound=self.max_jump_ratio_bound,
             delta=delta
         )
 
@@ -1202,7 +1185,6 @@ class ACTIS:
         max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None,
         enable_asymptotic_protection: bool = True,
         variance_ratio_bound: float = 0.05,
-        max_jump_ratio_bound: float = 0.50,
     ):
         r"""
         Args:
@@ -1269,10 +1251,6 @@ class ACTIS:
                 the maximum allowable ratio of cumulative process variance to prior
                 variance $V_t / v_0$. Defaults to 0.05. This argument has no effect when
                 `conf_seq='finite'` or when `enable_asymptotic_protection` is False.
-            max_jump_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies
-                the maximum allowable jump-to-variance ratio. Defaults to 0.50. This
-                argument has no effect when `conf_seq='finite'` or when
-                `enable_asymptotic_protection` is False.
         """
         if pop_size is not None and (pop_size <= 0 or pop_size != int(pop_size)):
             raise ValueError("Parameter `pop_size` must be a positive integer.")
@@ -1301,7 +1279,6 @@ class ACTIS:
                 thresholds=self.thresholds,
                 thresholds_upper=self.thresholds_upper,
                 v_0=v_0,
-                max_jump_ratio_bound=max_jump_ratio_bound,
                 variance_ratio_bound=variance_ratio_bound,
             )
         elif self.conf_seq == "finite":
