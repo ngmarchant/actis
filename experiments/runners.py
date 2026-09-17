@@ -10,15 +10,18 @@ Defines abstract base runners and concrete implementations for:
 Provides a unified evaluation suite (`run_evaluation_suite`) for paired Monte Carlo
 benchmarking.
 """
+
+import hashlib
+import json
 import math
 import random
 import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import lotus
 import numpy as np
@@ -65,8 +68,7 @@ BoolArray = NDArray[np.bool_]
 
 
 def compute_precision_recall(
-    preds: BoolArray,
-    labels: BoolArray
+    preds: BoolArray, labels: BoolArray
 ) -> tuple[float, float]:
     total_positives = np.sum(labels)
     tp = np.sum(preds & labels)
@@ -79,6 +81,7 @@ def compute_precision_recall(
 @dataclass
 class TrialResult:
     """Stores the evaluation metrics from a single Monte Carlo trial."""
+
     recall: float
     precision: float
     cost: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -90,11 +93,32 @@ class TrialResult:
     runtime: float | None = None
 
 
-
 @dataclass(kw_only=True)
 class BaseFilterRunner(ABC):
     """Abstract base class for semantic filtering methods."""
+
     name: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializes runner configuration to a JSON-compatible dictionary."""
+        res = {}
+        for f in fields(self):
+            if f.name.startswith("_"):
+                continue
+            val = getattr(self, f.name)
+            if isinstance(val, Path):
+                res[f.name] = str(val)
+            elif isinstance(val, (int, float, str, bool, list, dict)) or val is None:
+                res[f.name] = val
+            else:
+                res[f.name] = str(val)
+        return res
+
+    def config_hash(self, length: int = 8) -> str:
+        """Deterministic hash of runner configuration."""
+        d = self.to_dict()
+        s = json.dumps(d, sort_keys=True, default=str)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()[:length]
 
     @abstractmethod
     def run_trial(
@@ -251,15 +275,15 @@ class ACTISRunner(BaseFilterRunner):
         # Resolve auto initial_sample_size
         if self.initial_sample_size == "auto":
             init_sample_size = min(
-                pop_size,
-                max(1, min(1000, max(50, int(np.ceil(0.10 * pop_size)))))
+                pop_size, max(1, min(1000, max(50, int(np.ceil(0.10 * pop_size)))))
             )
         else:
             init_sample_size = min(pop_size, int(self.initial_sample_size))
 
         max_sample_size: int | None = None
-        if isinstance(self.max_sample_size, float) and \
-            (0.0 < self.max_sample_size <= 1.0):
+        if isinstance(self.max_sample_size, float) and (
+            0.0 < self.max_sample_size <= 1.0
+        ):
             max_sample_size = max(1, int(self.max_sample_size * pop_size))
         elif isinstance(self.max_sample_size, int) and self.max_sample_size >= 1:
             max_sample_size = min(self.max_sample_size, pop_size)
@@ -267,23 +291,18 @@ class ACTISRunner(BaseFilterRunner):
             max_sample_size = pop_size
 
         num_thresholds = min(self.num_thresholds, pop_size)
-        thresholds = np.quantile(
-            scores,
-            np.linspace(0, 1, num_thresholds)
-        )
+        thresholds = np.quantile(scores, np.linspace(0, 1, num_thresholds))
         thresholds = np.unique(thresholds)
         thresholds_upper = None
         if self.num_thresholds_upper is not None:
             num_thresholds_upper = min(self.num_thresholds_upper, pop_size)
             if self.power_law_quantiles:
                 thresholds_upper = quantile_power_law_grid(
-                    scores,
-                    num_thresholds=num_thresholds_upper
+                    scores, num_thresholds=num_thresholds_upper
                 )
             else:
                 thresholds_upper = np.quantile(
-                    scores,
-                    np.linspace(0, 1, num_thresholds_upper)
+                    scores, np.linspace(0, 1, num_thresholds_upper)
                 )
                 thresholds_upper = np.unique(thresholds_upper)
 
@@ -301,34 +320,38 @@ class ACTISRunner(BaseFilterRunner):
                 thresholds=thresholds,
                 thresholds_upper=thresholds_upper,
                 alpha=self.alpha,
-                method=self.proposal_method
+                method=self.proposal_method,
             )
 
             weights = 1.0 / (q * pop_size)
 
             if self.conf_seq == "finite":
-                max_weight_ge = np.array([
-                    weights[scores >= tau].max()
-                    if np.any(scores >= tau)
-                    else float(weights.max())
-                    for tau in thresholds
-                ])
-
-                max_weight_lt = np.array([
-                    weights[scores < tau].max()
-                    if np.any(scores < tau)
-                    else 0.0
-                    for tau in thresholds
-                ])
-
-                max_weight_ge_upper = None
-                if thresholds_upper is not None:
-                    max_weight_ge_upper = np.array([
+                max_weight_ge = np.array(
+                    [
                         weights[scores >= tau].max()
                         if np.any(scores >= tau)
                         else float(weights.max())
-                        for tau in thresholds_upper
-                    ])
+                        for tau in thresholds
+                    ]
+                )
+
+                max_weight_lt = np.array(
+                    [
+                        weights[scores < tau].max() if np.any(scores < tau) else 0.0
+                        for tau in thresholds
+                    ]
+                )
+
+                max_weight_ge_upper = None
+                if thresholds_upper is not None:
+                    max_weight_ge_upper = np.array(
+                        [
+                            weights[scores >= tau].max()
+                            if np.any(scores >= tau)
+                            else float(weights.max())
+                            for tau in thresholds_upper
+                        ]
+                    )
 
             pop_size_param = None
         elif self.sampling_method == "wor":
@@ -382,7 +405,7 @@ class ACTISRunner(BaseFilterRunner):
             max_weight_ge_upper=max_weight_ge_upper,
             enable_asymptotic_protection=self.enable_asymptotic_protection,
             variance_ratio_bound=self.variance_ratio_bound,
-            max_jump_ratio_bound=self.max_jump_ratio_bound
+            max_jump_ratio_bound=self.max_jump_ratio_bound,
         )
 
         def get_batch_size(requested: int) -> int:
@@ -510,9 +533,7 @@ class VectorizedProxy(Proxy):
         return 1, float(self.scores[idx])
 
     def get_preds_and_scores(
-        self,
-        indxs: list[int],
-        data_records: list[Any]
+        self, indxs: list[int], data_records: list[Any]
     ) -> tuple[np.ndarray, np.ndarray]:
         idx_arr = np.asarray(indxs, dtype=int)
         return np.ones(len(idx_arr), dtype=int), self.scores[idx_arr]
@@ -539,9 +560,8 @@ class VectorizedOracle(Oracle):
         return len(self.queried_indices)
 
     def get_pred(
-        self,
-        data_records: list[Any],
-        indxs: list[int] | None = None) -> np.ndarray:
+        self, data_records: list[Any], indxs: list[int] | None = None
+    ) -> np.ndarray:
         if indxs is None:
             idx_arr = np.asarray(data_records, dtype=int)
         else:
@@ -581,9 +601,7 @@ class BargainPRRunner(BaseFilterRunner):
         rng: np.random.Generator,
     ) -> TrialResult:
         if gamma_P != gamma_R:
-            raise ValueError(
-                "BargainPRRunner only supports `gamma_P == gamma_R`."
-            )
+            raise ValueError("BargainPRRunner only supports `gamma_P == gamma_R`.")
 
         scores = population.scores
         labels = population.labels
@@ -705,15 +723,11 @@ if _HAS_SCALEDOC:
                 bins_center = np.array(
                     [(bins[i] + bins[i + 1]) / 2 for i in range(len(bins) - 1)]
                 )
-                pos_ = np.array([j for j in samples if j in pos_idx])
-                neg_ = np.array([j for j in samples if j in neg_idx])
+                pos_ = samples[labels[samples]]
+                neg_ = samples[~labels[samples]]
 
-                pos_cos_sample = (
-                    scores[pos_] if pos_.shape[0] > 0 else np.array([])
-                )
-                neg_cos_sample = (
-                    scores[neg_] if neg_.shape[0] > 0 else np.array([])
-                )
+                pos_cos_sample = scores[pos_] if pos_.shape[0] > 0 else np.array([])
+                neg_cos_sample = scores[neg_] if neg_.shape[0] > 0 else np.array([])
                 hist_pos_sample, _ = np.histogram(pos_cos_sample, bins=bins)
                 hist_neg_sample, _ = np.histogram(neg_cos_sample, bins=bins)
 
@@ -796,11 +810,24 @@ def summarize_runner_trials(
     rec_fail = rec_arr < gamma_R
     prec_fail = prec_arr < gamma_P
     joint_fail = rec_fail | prec_fail
+
+    def metric_dict(vals: FloatArray, include_raw: bool) -> dict[str, Any]:
+        d = {
+            "mean": float(np.mean(vals)),
+            "median": float(np.median(vals)),
+            "std": float(np.std(vals)),
+            "se": float(np.std(vals) / np.sqrt(len(vals))),
+            "max": float(np.max(vals)),
+            "min": float(np.min(vals)),
+        }
+        if include_raw:
+            d["raw"] = vals.tolist()
+        return d
+
     summary: dict[str, Any] = {
-        "scenario": scenario.name,
-        "description": scenario.description,
-        "experiment_name": exp_name,
-        "runner_params": asdict(runner),
+        "date": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "scenario": scenario.to_dict(),
+        "runner": runner.to_dict(),
         "num_trials": len(results),
         "pop_size": pop_size,
         "gamma_R": gamma_R,
@@ -809,21 +836,10 @@ def summarize_runner_trials(
         "joint_failure_rate": float(np.mean(joint_fail)),
         "recall_failure_rate": float(np.mean(rec_fail)),
         "precision_failure_rate": float(np.mean(prec_fail)),
-        "coverage_guaranteed": bool(np.mean(joint_fail) <= delta),
-        "mean_true_recall": float(np.mean(rec_arr)),
-        "std_true_recall": float(np.std(rec_arr)),
-        "5th_percentile_recall": float(np.percentile(rec_arr, 5)),
-        "min_true_recall": float(np.min(rec_arr)),
-        "mean_true_precision": float(np.mean(prec_arr)),
-        "std_true_precision": float(np.std(prec_arr)),
-        "5th_percentile_precision": float(np.percentile(prec_arr, 5)),
-        "min_true_precision": float(np.min(prec_arr)),
+        "recall": metric_dict(rec_arr, include_raw),
+        "precision": metric_dict(prec_arr, include_raw),
         "ideal_oracle_call_rate": float(ideal_oracle_rate),
     }
-
-    if include_raw:
-        summary["raw_recalls"] = rec_arr.tolist()
-        summary["raw_precisions"] = prec_arr.tolist()
 
     # Hierarchical cost summary
     summary["cost"] = {"oracle": {}, "proxy": {}}
@@ -835,24 +851,18 @@ def summarize_runner_trials(
                     [r.cost[model_role].get(k, 0.0) for r in results],
                     dtype=np.float64,
                 )
-                metric_dict: dict[str, Any] = {
-                    "mean": float(np.mean(vals)),
-                    "std": float(np.std(vals)),
-                    "se": float(np.std(vals) / np.sqrt(len(results))),
-                }
-                if include_raw:
-                    metric_dict["raw"] = vals.tolist()
-                summary["cost"][model_role][k] = metric_dict
+                summary["cost"][model_role][k] = metric_dict(vals, include_raw)
 
     tau_poses = [r.tau_pos for r in results if r.tau_pos is not None]
     tau_negs = [r.tau_neg for r in results if r.tau_neg is not None]
     if tau_poses:
-        summary["mean_tau_pos"] = float(np.mean(tau_poses))
+        summary["tau_pos"] = metric_dict(np.array(tau_poses), False)
     if tau_negs:
-        summary["mean_tau_neg"] = float(np.mean(tau_negs))
+        summary["tau_neg"] = metric_dict(np.array(tau_negs), False)
 
     valid_flags = [
-        r.is_asymptotically_valid for r in results
+        r.is_asymptotically_valid
+        for r in results
         if r.is_asymptotically_valid is not None
     ]
     if valid_flags:
@@ -860,20 +870,14 @@ def summarize_runner_trials(
 
     runtimes = [r.runtime for r in results if r.runtime is not None]
     if runtimes:
-        runtime_arr = np.array(runtimes)
-        summary["mean_runtime"] = float(np.mean(runtime_arr))
-        summary["std_runtime"] = float(np.std(runtime_arr))
-        summary["se_runtime"] = float(np.std(runtime_arr) / np.sqrt(len(runtimes)))
-        if include_raw:
-            summary["raw_runtimes"] = runtime_arr.tolist()
+        summary["runtime"] = metric_dict(np.array(runtimes), include_raw)
 
     return summary
 
 
-
 def run_evaluation_suite(
     scenario: BaseScenario,
-    runners: list[BaseFilterRunner],
+    runners: Sequence[BaseFilterRunner],
     num_trials: int,
     pop_size: int | None,
     gamma_R: float,
@@ -882,18 +886,61 @@ def run_evaluation_suite(
     seed: int,
     exp_name: str = "comparative",
     include_raw: bool = True,
+    results_dir: Path | str | None = None,
+    skip_existing: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Executes paired Monte Carlo trials across configured runners on identical population
     instances.
     """
-    ss = np.random.SeedSequence(seed)
-    pop_ss, *trial_seeds = ss.spawn(1 + num_trials)
+    if pop_size is not None:
+        scenario.pop_size = pop_size
+    if scenario.seed is None:
+        scenario.seed = seed
 
-    pop_rng = np.random.default_rng(pop_ss)
+    if gamma_R == gamma_P:
+        filename = f"delta_{delta}_gamma_{gamma_R}_trials_{num_trials}.json"
+    else:
+        filename = (
+            f"delta_{delta}_gammaR_{gamma_R}_gammaP_{gamma_P}_trials_{num_trials}.json"
+        )
+
+    cached_results: dict[str, dict[str, Any]] = {}
+    runners_to_run: list[BaseFilterRunner] = []
+
+    for runner in runners:
+        if results_dir is not None:
+            target_dir = (
+                Path(results_dir)
+                / f"{scenario.name}_{scenario.config_hash()}"
+                / f"{runner.name}_{runner.config_hash()}"
+            )
+            target_file = target_dir / filename
+        else:
+            target_file = None
+
+        if target_file is not None and skip_existing and target_file.exists():
+            try:
+                with open(target_file, "r") as f:
+                    cached_results[runner.name] = json.load(f)
+                print(
+                    f"  [SKIP] {runner.name} on {scenario.name} "
+                    f"(cached in {target_file})",
+                    flush=True,
+                )
+            except Exception as e:
+                warnings.warn(f"Failed to read cache {target_file}: {e}. Re-running.")
+                runners_to_run.append(runner)
+        else:
+            runners_to_run.append(runner)
+
+    if not runners_to_run:
+        return [cached_results[r.name] for r in runners]
+
+    ss = np.random.SeedSequence(seed)
+    trial_seeds = ss.spawn(num_trials)
+
     pop = scenario.generate_population(
-        pop_size,
-        rng=pop_rng,
         gamma_P=gamma_P,
         gamma_R=gamma_R,
     )
@@ -907,20 +954,19 @@ def run_evaluation_suite(
         pop.scores, pop.labels, gamma_R, gamma_P
     )
 
-    runner_results: dict[str, list[TrialResult]] = {r.name: [] for r in runners}
+    runner_results: dict[str, list[TrialResult]] = {r.name: [] for r in runners_to_run}
 
     start_suite_time = time.time()
     print(
         f"\n[{scenario.name.upper()}] Starting {num_trials} trials across "
-        f"{len(runners)} runner(s)...",
+        f"{len(runners_to_run)} runner(s)...",
         flush=True,
     )
 
     log_freq = max(1, num_trials // 10)
 
     for trial_idx, trial_seed in enumerate(trial_seeds):
-
-        for runner in runners:
+        for runner in runners_to_run:
             runner_rng = np.random.default_rng(trial_seed)
 
             t0 = time.perf_counter()
@@ -945,8 +991,7 @@ def run_evaluation_suite(
                 flush=True,
             )
 
-    summary_results = []
-    for runner in runners:
+    for runner in runners_to_run:
         summary = summarize_runner_trials(
             runner=runner,
             results=runner_results[runner.name],
@@ -959,9 +1004,26 @@ def run_evaluation_suite(
             ideal_oracle_rate=ideal_oracle_call_rate,
             include_raw=include_raw,
         )
-        summary_results.append(summary)
+        if results_dir is not None:
+            target_dir = (
+                Path(results_dir)
+                / f"{scenario.name}_{scenario.config_hash()}"
+                / f"{runner.name}_{runner.config_hash()}"
+            )
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_file = target_dir / filename
+            tmp_file = target_file.with_suffix(".tmp")
+            with open(tmp_file, "w") as f:
+                json.dump(summary, f, indent=2)
+            tmp_file.replace(target_file)
+            print(
+                f"  [SAVED] {runner.name} on {scenario.name} -> {target_file}",
+                flush=True,
+            )
 
-    return summary_results
+        cached_results[runner.name] = summary
+
+    return [cached_results[r.name] for r in runners]
 
 
 def print_comparison_table(results: list[dict[str, Any]]) -> None:
@@ -969,40 +1031,47 @@ def print_comparison_table(results: list[dict[str, Any]]) -> None:
     if not results:
         return
     scen = results[0]["scenario"]
+    scen_name = scen.get("name", "") if isinstance(scen, dict) else str(scen)
     print("\n" + "=" * 90, flush=True)
     print(
-        f" SCENARIO: {scen.upper()} (Target gamma_R={results[0]['gamma_R']:.2f}, "
+        f" SCENARIO: {scen_name.upper()} (Target gamma_R={results[0]['gamma_R']:.2f}, "
         f"gamma_P={results[0]['gamma_P']:.2f}, "
         f"delta={results[0]['promised_delta']:.2f})",
-        flush=True
+        flush=True,
     )
     print("=" * 90, flush=True)
     fmt_header = "{:<32} | {:<12} | {:<12} | {:<12} | {:<16}"
     fmt_row = "{:<32} | {:<12.3f} | {:<12.3f} | {:<12.3f} | {:<15.2f}%"
     print(
-        fmt_header.format("Method", "Joint Fail", "Rec Fail", "Prec Fail",
-        "Mean Oracle Rate"),
-        flush=True
+        fmt_header.format(
+            "Method", "Joint Fail", "Rec Fail", "Prec Fail", "Mean Oracle Rate"
+        ),
+        flush=True,
     )
     print("-" * 90, flush=True)
     for r in results:
-        oracle_rate = (
-            r.get("cost", {})
-            .get("oracle", {})
-            .get("call_rate", {})
-            .get("mean", 0.0)
+        runner_info = r.get("runner") or r.get("runner_params", {})
+        runner_name = (
+            runner_info.get("name", "unknown")
+            if isinstance(runner_info, dict)
+            else str(runner_info)
         )
-        print(fmt_row.format(
-            r["runner_params"]["name"],
-            r["joint_failure_rate"],
-            r["recall_failure_rate"],
-            r["precision_failure_rate"],
-            oracle_rate * 100,
-        ), flush=True)
+        oracle_rate = (
+            r.get("cost", {}).get("oracle", {}).get("call_rate", {}).get("mean", 0.0)
+        )
+        print(
+            fmt_row.format(
+                runner_name,
+                r["joint_failure_rate"],
+                r["recall_failure_rate"],
+                r["precision_failure_rate"],
+                oracle_rate * 100,
+            ),
+            flush=True,
+        )
     print(
         f" Ideal Optimal Oracle Call Rate: "
         f"{results[0]['ideal_oracle_call_rate'] * 100:.2f}%",
-        flush=True
+        flush=True,
     )
     print("=" * 90, flush=True)
-

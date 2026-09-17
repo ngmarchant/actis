@@ -1,8 +1,11 @@
+import hashlib
+import json
 import re
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -11,7 +14,8 @@ from numpy.typing import NDArray
 
 @dataclass
 class Population:
-    """Represents a population dataset of proxy scores, oracle labels, and cost metrics.
+    """
+    Represents a population dataset of proxy scores, oracle labels, and cost metrics.
     """
 
     scores: NDArray[np.float64]
@@ -147,30 +151,40 @@ def compute_ideal_oracle_call_rate(
     return min(1.0, max(0.0, min_oracle_rate))
 
 
+@dataclass(kw_only=True)
 class BaseScenario(ABC):
     """Abstract base class for coverage scenarios."""
 
-    def __init__(self, name: str, description: str):
-        self.name = name
-        self.description = description
+    name: str = ""
+    description: str = ""
+    pop_size: int | None = None
+    seed: int | None = 42
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializes scenario configuration to a JSON-compatible dictionary."""
+        res = {}
+        for f in fields(self):
+            if f.name.startswith("_"):
+                continue
+            val = getattr(self, f.name)
+            if isinstance(val, Path):
+                res[f.name] = str(val)
+            elif isinstance(val, (int, float, str, bool, list, dict)) or val is None:
+                res[f.name] = val
+            else:
+                res[f.name] = str(val)
+        return res
+
+    def config_hash(self, length: int = 8) -> str:
+        """Deterministic hash of scenario configuration."""
+        d = self.to_dict()
+        s = json.dumps(d, sort_keys=True, default=str)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()[:length]
 
     @abstractmethod
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population dataset of proxy scores, oracle labels, and cost metrics.
-
-        Args:
-            pop_size: Total number of items in the population. If None, uses the
-                scenario default.
-            rng: NumPy random generator for reproducibility. If None, creates a
-                default generator.
-            **kwargs: Optional scenario-specific parameters, such as gamma_P
-                or gamma_R.
 
         Returns:
             A Population object containing scores, labels, and cost metrics.
@@ -178,6 +192,7 @@ class BaseScenario(ABC):
         pass
 
 
+@dataclass(kw_only=True)
 class UninformativeProxyFloor(BaseScenario):
     """
     Uninformative Proxy Floor Stress Test.
@@ -191,38 +206,21 @@ class UninformativeProxyFloor(BaseScenario):
     instead of prematurely under-calling the oracle and violating guarantees.
     """
 
-    def __init__(self):
-        super().__init__(
-            name="uninformative_proxy_floor",
-            description="Weak proxy (AUC ~0.6) and 1.5% prevalence forcing an oracle "
-            "floor >= 55%.",
-        )
+    name: str = "uninformative_proxy_floor"
+    description: str = (
+        "Weak proxy (AUC ~0.6) and 1.5% prevalence forcing an oracle floor >= 55%."
+    )
+    pop_size: int | None = 100000
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population where scores carry minimal ranking signal.
 
         Positives make up 1.5% of the data and have scores uniformly distributed in
         [0.35, 0.85]. Negatives have scores uniformly distributed in [0.0, 1.0].
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
         scores = rng.uniform(0.0, 1.0, size=pop_size)
         oracle = np.zeros(pop_size, dtype=bool)
@@ -237,6 +235,7 @@ class UninformativeProxyFloor(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class PrecisionTailOverfit(BaseScenario):
     """
     Precision Tail Overfitting.
@@ -250,51 +249,24 @@ class PrecisionTailOverfit(BaseScenario):
     falsely concluding that precision is 100% and accepting thresholds that are too low.
     """
 
-    def __init__(self, gamma_P: float = 0.8, delta_P: float = 0.15):
-        super().__init__(
-            name="precision_tail_overfit",
-            description=f"Sparse upper tail with precision calibrated to gamma_P - "
-            f"{delta_P:.2f}, testing against zero sample variance collapse.",
-        )
-        self.gamma_P = gamma_P
-        self.delta_P = delta_P
+    name: str = "precision_tail_overfit"
+    description: str = (
+        "Sparse upper tail with precision calibrated to gamma_P - delta_P, "
+        "testing against zero sample variance collapse."
+    )
+    pop_size: int | None = 100000
+    gamma_P: float = 0.8
+    delta_P: float = 0.15
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        gamma_P: float | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population with an overfit upper tail that scales with target
         precision.
-
-        Positives are distributed in [0.5, 1.0], with half falling in the upper tail
-        [0.75, 1.0].
-        Negative distractors in [0.75, 1.0] are dynamically scaled so that the true
-        precision in the upper tail equals (gamma_P - delta_P).
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            gamma_P: Primary precision target override passed by the evaluation
-                runner.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
-        if pop_size is None:
-            pop_size = 100000
-
-        eff_gamma_P = (
-            gamma_P if gamma_P is not None
-            else self.gamma_P
-        )
+        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
         p_tail = min(0.9, max(0.4, eff_gamma_P - self.delta_P))
 
         # 85% negatives, 15% positives
@@ -321,6 +293,7 @@ class PrecisionTailOverfit(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class Benign(BaseScenario):
     """
     Benign Data (Calibrated Polarized Neural Proxy).
@@ -332,37 +305,16 @@ class Benign(BaseScenario):
     of algorithms on well-behaved workloads.
     """
 
-    def __init__(self):
-        super().__init__(
-            name="benign",
-            description="Calibrated data with bimodal Beta proxy scores (AUC > 0.95).",
-        )
+    name: str = "benign"
+    description: str = "Calibrated data with bimodal Beta proxy scores (AUC > 0.95)."
+    pop_size: int | None = 100000
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a clean population using calibrated bimodal Beta distributions.
-
-        15% of items are positive with scores centered near 0.85 (Beta(4.0, 0.8)).
-        85% of items are negative with scores centered near 0.15 (Beta(0.8, 4.0)).
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
         n_pos = int(0.15 * pop_size)
         n_neg = pop_size - n_pos
@@ -378,6 +330,7 @@ class Benign(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class SemanticJoinNeedle(BaseScenario):
     """
     Extreme Sparsity (Semantic Join Needle-in-a-Haystack).
@@ -392,38 +345,19 @@ class SemanticJoinNeedle(BaseScenario):
     queries on the tail.
     """
 
-    def __init__(self):
-        super().__init__(
-            name="semantic_join_needle",
-            description="Semantic join with 0.05% prevalence testing positive discovery"
-            " under extreme sparsity.",
-        )
+    name: str = "semantic_join_needle"
+    description: str = (
+        "Semantic join with 0.05% prevalence testing positive discovery under extreme "
+        "sparsity."
+    )
+    pop_size: int | None = 100000
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates an extremely sparse population modeling a semantic join operator.
-
-        Only 0.05% of items are positive, with proxy scores in [0.7, 0.95].
-        Negatives are concentrated near 0.0 (98% have scores < 0.02).
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
         n_pos = max(1, int(0.0005 * pop_size))
         n_neg = pop_size - n_pos
@@ -440,6 +374,7 @@ class SemanticJoinNeedle(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class DiscreteLexical(BaseScenario):
     """
     Discrete Lexical Proxy.
@@ -453,40 +388,20 @@ class DiscreteLexical(BaseScenario):
     searches stall on identical scores.
     """
 
-    def __init__(self):
-        super().__init__(
-            name="discrete_lexical_gate",
-            description="Lexical proxy with 85% at score 0.0 and tied discrete levels "
-            "{0.2, 0.4, 0.6, 0.8, 1.0}.",
-        )
+    name: str = "discrete_lexical_gate"
+    description: str = (
+        "Lexical proxy with 85% at score 0.0 and tied discrete levels "
+        "{0.2, 0.4, 0.6, 0.8, 1.0}."
+    )
+    pop_size: int | None = 100000
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population modeling a lightweight lexical proxy with tied discrete
         scores.
-
-        85% of items have a score of 0.0 with minimal positive leakage (0.1%).
-        The remaining 15% are distributed across discrete levels {0.2, 0.4, 0.6, 0.8,
-        1.0}.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
         scores = np.zeros(pop_size, dtype=np.float64)
         oracle = np.zeros(pop_size, dtype=bool)
@@ -504,12 +419,13 @@ class DiscreteLexical(BaseScenario):
 
         for lvl, p in zip(levels, level_probs):
             mask = np.zeros(pop_size, dtype=bool)
-            mask[n_zero:] = (assigned_levels == lvl)
+            mask[n_zero:] = assigned_levels == lvl
             oracle[mask] = rng.random(size=np.sum(mask)) < p
 
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class PrecisionBoundaryCriticalMargin(BaseScenario):
     """
     Precision Boundary Critical Margin.
@@ -523,50 +439,23 @@ class PrecisionBoundaryCriticalMargin(BaseScenario):
     accept a threshold in [0.7, 0.9] and fail the precision guarantee.
     """
 
-    def __init__(self, gamma_P: float = 0.8, margin_gap: float = 0.015):
-        super().__init__(
-            name="precision_boundary_critical_margin",
-            description=f"Near-target precision boundary test with precision in "
-            f"[0.7, 0.9] at gamma_P - {margin_gap:.3f} testing early-stopping false "
-            f"acceptance.",
-        )
-        self.gamma_P = gamma_P
-        self.margin_gap = margin_gap
+    name: str = "precision_boundary_critical_margin"
+    description: str = (
+        "Near-target precision boundary test with precision in [0.7, 0.9] at "
+        "gamma_P - margin_gap testing early-stopping false acceptance."
+    )
+    pop_size: int | None = 100000
+    gamma_P: float = 0.8
+    margin_gap: float = 0.015
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        gamma_P: float | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population with a sub-target precision band tuned to target
         precision.
-
-        Items in [0.7, 0.9] have precision set to (gamma_P - margin_gap).
-        Items above 0.9 have precision comfortably above gamma_P.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            gamma_P: Primary precision target override passed by the evaluation
-                runner.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
-
-        eff_gamma_P = (
-            gamma_P if gamma_P is not None
-            else self.gamma_P
-        )
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
+        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
 
         # Precision in [0.7, 0.9] is strictly below target gamma_P by margin_gap
         boundary_prec = max(0.05, eff_gamma_P - self.margin_gap)
@@ -594,6 +483,7 @@ class PrecisionBoundaryCriticalMargin(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class RecallBoundaryCriticalMargin(BaseScenario):
     """
     Recall Boundary Critical Margin.
@@ -608,50 +498,22 @@ class RecallBoundaryCriticalMargin(BaseScenario):
     threshold too high and fail the recall guarantee.
     """
 
-    def __init__(self, gamma_R: float = 0.8, margin_gap: float = 0.015):
-        super().__init__(
-            name="recall_boundary_critical_margin",
-            description=f"Near-target recall boundary test where tau_lower in "
-            f"[0.15, 0.35] achieves gamma_R - {margin_gap:.3f} testing premature lower "
-            f"threshold acceptance.",
-        )
-        self.gamma_R = gamma_R
-        self.margin_gap = margin_gap
+    name: str = "recall_boundary_critical_margin"
+    description: str = (
+        "Near-target recall boundary test where tau_lower in [0.15, 0.35] achieves "
+        "gamma_R - margin_gap testing premature lower threshold acceptance."
+    )
+    pop_size: int | None = 100000
+    gamma_R: float = 0.8
+    margin_gap: float = 0.015
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        gamma_R: float | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population with a sub-target recall boundary tuned to target recall.
-
-        Positives are partitioned so that dropping scores below 0.15 retains only
-        (gamma_R - margin_gap) of all positives. To satisfy the recall target,
-        the cascade must choose a lower threshold tau_lower <= 0.05.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            gamma_R: Primary recall target override passed by the evaluation
-                runner.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
-
-        eff_gamma_R = (
-            gamma_R if gamma_R is not None
-            else self.gamma_R
-        )
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
+        eff_gamma_R = kwargs.get("gamma_R", self.gamma_R)
 
         n_pos = int(0.15 * pop_size)
         n_neg = pop_size - n_pos
@@ -677,6 +539,7 @@ class RecallBoundaryCriticalMargin(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class TrappedHead(BaseScenario):
     """
     Trapped Head Distribution.
@@ -691,47 +554,23 @@ class TrappedHead(BaseScenario):
     overall accepted region precision below gamma_P.
     """
 
-    def __init__(self, gamma_P: float = 0.8, margin_gap: float = 0.08):
-        super().__init__(
-            name="trapped_head",
-            description=(
-                f"Trapped head with pure positive tail in [0.95, 1.0] and "
-                f"sub-target band in [0.75, 0.95) at gamma_P - {margin_gap:.3f}, "
-                f"testing sliding-window and early-stopping false acceptance."
-            ),
-        )
-        self.gamma_P = gamma_P
-        self.margin_gap = margin_gap
+    name: str = "trapped_head"
+    description: str = (
+        "Trapped head with pure positive tail in [0.95, 1.0] and "
+        "sub-target band in [0.75, 0.95) at gamma_P - margin_gap, "
+        "testing sliding-window and early-stopping false acceptance."
+    )
+    pop_size: int | None = 100000
+    gamma_P: float = 0.8
+    margin_gap: float = 0.08
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        gamma_P: float | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population with a deceptive trapped head score distribution.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            gamma_P: Primary precision target override passed by the evaluation runner.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
-
-        eff_gamma_P = (
-            gamma_P if gamma_P is not None
-            else self.gamma_P
-        )
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
+        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
 
         # Region 1: 90% uninformative body in [0.0, 0.75] with 1% positives
         n_body = int(0.90 * pop_size)
@@ -758,6 +597,7 @@ class TrappedHead(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class PowerLawTailLeakage(BaseScenario):
     """
     Power-Law Tail Leakage.
@@ -770,41 +610,20 @@ class PowerLawTailLeakage(BaseScenario):
     tail.
     """
 
-    def __init__(self):
-        super().__init__(
-            name="power_law_tail_leakage",
-            description="Dense retrieval power-law tail testing fine upper-threshold "
-            "quantile grid resolution.",
-        )
+    name: str = "power_law_tail_leakage"
+    description: str = (
+        "Dense retrieval power-law tail testing fine upper-threshold "
+        "quantile grid resolution."
+    )
+    pop_size: int | None = 100000
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population modeling dense retrieval with power-law distractor
         leakage.
-
-        98% of negatives have low scores, while 1% leak into [0.95, 1.0] under a
-        power-law tail.
-        Positives are concentrated near 1.0 (Beta(15.0, 0.5)), requiring fine
-        upper-threshold resolution to isolate them from high-scoring distractors.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
 
         n_pos = int(0.02 * pop_size)
         n_neg = pop_size - n_pos
@@ -827,6 +646,7 @@ class PowerLawTailLeakage(BaseScenario):
         return Population(scores=scores, labels=oracle)
 
 
+@dataclass(kw_only=True)
 class ProxyMiscalibrated(BaseScenario):
     """
     Proxy Miscalibration with Sub-population Blindspot.
@@ -839,50 +659,22 @@ class ProxyMiscalibrated(BaseScenario):
     This forces the algorithm to detect the blindspot and send it to the oracle.
     """
 
-    def __init__(self, gamma_R: float = 0.8, margin_gap: float = 0.02):
-        super().__init__(
-            name="proxy_miscalibrated",
-            description=f"Proxy model blindspot scaled to hold (1 - gamma_R + "
-            f"{margin_gap:.3f}) of positives in [0.0, 0.2].",
-        )
-        self.gamma_R = gamma_R
-        self.margin_gap = margin_gap
+    name: str = "proxy_miscalibrated"
+    description: str = (
+        "Proxy model blindspot scaled to hold (1 - gamma_R + "
+        "margin_gap) of positives in [0.0, 0.2]."
+    )
+    pop_size: int | None = 100000
+    gamma_R: float = 0.8
+    margin_gap: float = 0.02
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        gamma_R: float | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population with a low-score blindspot scaled to target recall.
-
-        The blindspot in [0.0, 0.2] contains (1 - gamma_R + margin_gap) of all
-        positives.
-        If an algorithm ignores the blindspot and drops low scores, it achieves recall
-        strictly below the target.
-
-        Args:
-            pop_size: Total number of items in the population.
-            rng: NumPy random generator.
-            gamma_R: Primary recall target override passed by the evaluation
-                runner.
-            **kwargs: Additional keyword arguments (ignored).
-
-        Returns:
-            A Population object containing scores, labels, and cost metrics.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        if pop_size is None:
-            pop_size = 100000
-
-        eff_gamma_R = (
-            gamma_R if gamma_R is not None
-            else self.gamma_R
-        )
+        rng = np.random.default_rng(self.seed)
+        pop_size = self.pop_size if self.pop_size is not None else 100000
+        eff_gamma_R = kwargs.get("gamma_R", self.gamma_R)
 
         # Desired fraction of all true positives located in blindspot
         f_blind = min(0.5, max(0.04, (1.0 - eff_gamma_R) + self.margin_gap))
@@ -907,11 +699,13 @@ class ProxyMiscalibrated(BaseScenario):
             rng.uniform(0.0, 0.4, size=n_main),
         )
 
-        # Blindspot subpopulation: 100% positive, low proxy scores in [0.0, 0.2]
+        # Blindspot: 100% positive rate with very low scores in [0.0, 0.2]
         oracle[n_main:] = True
         scores[n_main:] = rng.uniform(0.0, 0.2, size=n_blindspot)
 
-        return Population(scores=scores, labels=oracle)
+        # Randomly shuffle items to prevent ordering artifacts
+        perm = rng.permutation(pop_size)
+        return Population(scores=scores[perm], labels=oracle[perm])
 
 
 def _read_dataframe(path: Path) -> pd.DataFrame:
@@ -928,6 +722,7 @@ def _read_dataframe(path: Path) -> pd.DataFrame:
     """
     if path.is_dir():
         from datasets import Dataset, load_from_disk
+
         ds = load_from_disk(str(path))
         if not isinstance(ds, Dataset):
             raise ValueError(f"Loaded dataset is not a Dataset: {type(ds)}")
@@ -945,10 +740,12 @@ def _read_dataframe(path: Path) -> pd.DataFrame:
             except Exception:
                 try:
                     import pyarrow.ipc as ipc
+
                     with ipc.open_stream(str(path)) as reader:
                         return reader.read_all().to_pandas()
                 except Exception:
                     import pyarrow.feather as feather
+
                     return feather.read_table(str(path)).to_pandas()
     elif suffix in [".parquet", ".pq"]:
         return pd.read_parquet(path)
@@ -962,6 +759,7 @@ def _read_dataframe(path: Path) -> pd.DataFrame:
             return pd.read_csv(path)
 
 
+@dataclass(kw_only=True)
 class TabularDataset(BaseScenario):
     """
     Scenario for file-backed benchmark datasets (CSV, Feather, Arrow, Parquet).
@@ -969,34 +767,26 @@ class TabularDataset(BaseScenario):
     Loads proxy scores and ground-truth oracle labels directly from a file on disk.
     """
 
-    def __init__(
-        self,
-        name: str,
-        description: str,
-        data_path: str | Path,
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-        oracle_cost_col: str = "oracle_cost",
-        proxy_cost_col: str = "proxy_cost",
-    ):
-        super().__init__(name=name, description=description)
-        self.data_path = Path(data_path)
-        self.score_col = score_col
-        self.label_col = label_col
-        self.oracle_cost_col = oracle_cost_col
-        self.proxy_cost_col = proxy_cost_col
-        self._df: pd.DataFrame | None = None
-        self._data: Population | None = None
+    data_path: str | Path = ""
+    score_col: str = "proxy_score"
+    label_col: str = "label"
+    oracle_cost_col: str = "oracle_cost"
+    proxy_cost_col: str = "proxy_cost"
+
+    def __post_init__(self):
+        if self.data_path != "":
+            self.data_path = Path(self.data_path)
+        object.__setattr__(self, "_df", None)
+        object.__setattr__(self, "_data", None)
 
     def get_dataframe(self) -> pd.DataFrame:
         """Loads and returns the cached underlying DataFrame."""
-        if self._df is None:
-            if not self.data_path.exists():
-                raise FileNotFoundError(
-                    f"Dataset not found at '{self.data_path}'."
-                )
-            self._df = _read_dataframe(self.data_path)
-        return self._df
+        if getattr(self, "_df", None) is None:
+            data_path = Path(self.data_path)
+            if not data_path.exists():
+                raise FileNotFoundError(f"Dataset not found at '{data_path}'.")
+            object.__setattr__(self, "_df", _read_dataframe(data_path))
+        return getattr(self, "_df")
 
     def _extract_costs(
         self, df: pd.DataFrame, col_name: str
@@ -1034,8 +824,6 @@ class TabularDataset(BaseScenario):
     def get_costs(
         self,
         cost_key: str = "monetary",
-        oracle_cost_col: str = "oracle_cost",
-        proxy_cost_col: str = "proxy_cost",
         default_oracle_cost: float = 1.0,
         default_proxy_cost: float = 0.0,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -1045,8 +833,6 @@ class TabularDataset(BaseScenario):
         Args:
             cost_key: Metric key inside the cost dictionaries (e.g. 'monetary',
                 'input_tokens', 'latency_ms').
-            oracle_cost_col: Name of the oracle cost dictionary column.
-            proxy_cost_col: Name of the proxy cost dictionary column.
             default_oracle_cost: Fallback cost if column or cost_key is missing.
             default_proxy_cost: Fallback cost if column or cost_key is missing.
 
@@ -1070,7 +856,7 @@ class TabularDataset(BaseScenario):
         Returns:
             A Population object.
         """
-        if self._data is None:
+        if getattr(self, "_data", None) is None:
             df = self.get_dataframe()
             if self.score_col not in df.columns:
                 raise ValueError(
@@ -1088,7 +874,7 @@ class TabularDataset(BaseScenario):
             if raw_label.dtype == bool:
                 oracle = raw_label.to_numpy(dtype=bool)
             elif np.issubdtype(raw_label.dtype, np.number):
-                oracle = (raw_label.to_numpy(dtype=np.float64) == 1.0)
+                oracle = raw_label.to_numpy(dtype=np.float64) == 1.0
             else:
                 oracle = (
                     raw_label.astype(str)
@@ -1101,44 +887,37 @@ class TabularDataset(BaseScenario):
             oracle_costs = self._extract_costs(df, self.oracle_cost_col)
             proxy_costs = self._extract_costs(df, self.proxy_cost_col)
 
-            self._data = Population(
-                scores=scores,
-                labels=oracle,
-                oracle_costs=oracle_costs,
-                proxy_costs=proxy_costs,
+            object.__setattr__(
+                self,
+                "_data",
+                Population(
+                    scores=scores,
+                    labels=oracle,
+                    oracle_costs=oracle_costs,
+                    proxy_costs=proxy_costs,
+                ),
             )
-        return self._data
+        return getattr(self, "_data")
 
-    def generate_population(
-        self,
-        pop_size: int | None = None,
-        rng: np.random.Generator | None = None,
-        **kwargs,
-    ) -> Population:
+    def generate_population(self, **kwargs) -> Population:
         """
         Generates a population by subsampling or loading from a disk-backed dataset.
-
-        Args:
-            pop_size: Number of items to sample. If None or larger than the dataset,
-                returns all items.
-            rng: NumPy random generator for random subsampling.
-            **kwargs: Additional keyword arguments (ignored).
 
         Returns:
             A Population object.
         """
         pop = self._load_data()
-        if pop_size is None or pop_size >= len(pop):
+        if self.pop_size is None or self.pop_size >= len(pop):
             return pop
-        if rng is None:
-            rng = np.random.default_rng()
-        idx = rng.choice(len(pop), size=pop_size, replace=False)
+        rng = np.random.default_rng(self.seed)
+        idx = rng.choice(len(pop), size=self.pop_size, replace=False)
         return pop.slice(idx)
 
 
 FileDataset = TabularDataset
 
 
+@dataclass(kw_only=True)
 class SUPGOnto(TabularDataset):
     """
     SUPG Onto Benchmark Dataset
@@ -1148,21 +927,12 @@ class SUPGOnto(TabularDataset):
     Contains N=11,165 tuples with ~2.5% positive prevalence.
     """
 
-    def __init__(
-        self,
-        data_path: str | Path = "experiments/data/supg/onto/source.csv",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-    ):
-        super().__init__(
-            name="supg_onto",
-            description="SUPG Onto benchmark dataset",
-            data_path=data_path,
-            score_col=score_col,
-            label_col=label_col,
-        )
+    name: str = "supg_onto"
+    description: str = "SUPG Onto benchmark dataset"
+    data_path: str | Path = "experiments/data/supg/onto/source.csv"
 
 
+@dataclass(kw_only=True)
 class SUPGImageNet(TabularDataset):
     """
     SUPG ImageNet Benchmark Dataset
@@ -1172,24 +942,15 @@ class SUPGImageNet(TabularDataset):
     Contains N=50,000 tuples with ~0.1% positive prevalence (50 positives).
     """
 
-    def __init__(
-        self,
-        data_path: str | Path = "experiments/data/supg/imagenet/source.csv",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-    ):
-        super().__init__(
-            name="supg_imagenet",
-            description="SUPG ImageNet benchmark dataset",
-            data_path=data_path,
-            score_col=score_col,
-            label_col=label_col,
-        )
+    name: str = "supg_imagenet"
+    description: str = "SUPG ImageNet benchmark dataset"
+    data_path: str | Path = "experiments/data/supg/imagenet/source.csv"
 
 
 SUPGImagenet = SUPGImageNet
 
 
+@dataclass(kw_only=True)
 class SUPGJackson(TabularDataset):
     """
     SUPG Jackson Benchmark Dataset
@@ -1199,21 +960,12 @@ class SUPGJackson(TabularDataset):
     Contains N=973,085 tuples with ~29.2% positive prevalence.
     """
 
-    def __init__(
-        self,
-        data_path: str | Path = "experiments/data/supg/jackson/2017-12-17.feather",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-    ):
-        super().__init__(
-            name="supg_jackson",
-            description="SUPG Jackson benchmark dataset",
-            data_path=data_path,
-            score_col=score_col,
-            label_col=label_col,
-        )
+    name: str = "supg_jackson"
+    description: str = "SUPG Jackson benchmark dataset"
+    data_path: str | Path = "experiments/data/supg/jackson/2017-12-17.feather"
 
 
+@dataclass(kw_only=True)
 class SUPGTACRED(TabularDataset):
     """
     SUPG TACRED Benchmark Dataset
@@ -1223,24 +975,15 @@ class SUPGTACRED(TabularDataset):
     Contains N=22,631 tuples with ~2.4% positive prevalence.
     """
 
-    def __init__(
-        self,
-        data_path: str | Path = "experiments/data/supg/tacred/source.csv",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-    ):
-        super().__init__(
-            name="supg_tacred",
-            description="SUPG TACRED benchmark dataset",
-            data_path=data_path,
-            score_col=score_col,
-            label_col=label_col,
-        )
+    name: str = "supg_tacred"
+    description: str = "SUPG TACRED benchmark dataset"
+    data_path: str | Path = "experiments/data/supg/tacred/source.csv"
 
 
 SUPGTacred = SUPGTACRED
 
 
+@dataclass(kw_only=True)
 class ScaleDocDataset(TabularDataset):
     """
     Scenario for ScaleDoc benchmark datasets (PubMed, BigPatent, GovReport).
@@ -1250,94 +993,41 @@ class ScaleDocDataset(TabularDataset):
     (default: experiments/data/scaledoc/{dataset}/q{query_id}.parquet).
     """
 
-    def __init__(
-        self,
-        dataset_name: str,
-        query_id: str = '0',
-        data_dir: str | Path = "experiments/data/scaledoc",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-        data_path: str | Path | None = None,
-    ):
-        clean_name = dataset_name.lower().replace("-", "_")
-        clean_qid = query_id.lower()
-        if data_path is None:
-            resolved_path = Path(data_dir) / clean_name / f"q{clean_qid}.parquet"
-        else:
-            resolved_path = Path(data_path)
+    dataset_name: str = ""
+    query_id: str = "0"
+    data_dir: str | Path = "experiments/data/scaledoc"
 
-        super().__init__(
-            name=f"scaledoc_{clean_name}_q{clean_qid}",
-            description=f"ScaleDoc {clean_name} query {clean_qid}",
-            data_path=resolved_path,
-            score_col=score_col,
-            label_col=label_col,
-        )
-        self.dataset_name = clean_name
-        self.query_id = query_id
+    def __post_init__(self):
+        clean_name = self.dataset_name.lower().replace("-", "_")
+        clean_qid = str(self.query_id).lower()
+        if not self.name:
+            self.name = f"scaledoc_{clean_name}_q{clean_qid}"
+        if not self.description:
+            self.description = f"ScaleDoc {clean_name} query {clean_qid}"
+        if not self.data_path:
+            self.data_path = Path(self.data_dir) / clean_name / f"q{clean_qid}.parquet"
+        super().__post_init__()
 
 
+@dataclass(kw_only=True)
 class ScaleDocPubMed(ScaleDocDataset):
     """ScaleDoc PubMed query benchmark scenario."""
 
-    def __init__(
-        self,
-        query_id: str = '0',
-        data_dir: str | Path = "experiments/data/scaledoc",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-        data_path: str | Path | None = None,
-    ):
-        super().__init__(
-            dataset_name="pubmed",
-            query_id=query_id,
-            data_dir=data_dir,
-            score_col=score_col,
-            label_col=label_col,
-            data_path=data_path,
-        )
+    dataset_name: str = "pubmed"
 
 
+@dataclass(kw_only=True)
 class ScaleDocBigPatent(ScaleDocDataset):
     """ScaleDoc BigPatent query benchmark scenario."""
 
-    def __init__(
-        self,
-        query_id: str = '0',
-        data_dir: str | Path = "experiments/data/scaledoc",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-        data_path: str | Path | None = None,
-    ):
-        super().__init__(
-            dataset_name="big_patent",
-            query_id=query_id,
-            data_dir=data_dir,
-            score_col=score_col,
-            label_col=label_col,
-            data_path=data_path,
-        )
+    dataset_name: str = "big_patent"
 
 
+@dataclass(kw_only=True)
 class ScaleDocGovReport(ScaleDocDataset):
     """ScaleDoc GovReport query benchmark scenario."""
 
-    def __init__(
-        self,
-        query_id: str = '0',
-        data_dir: str | Path = "experiments/data/scaledoc",
-        score_col: str = "proxy_score",
-        label_col: str = "label",
-        data_path: str | Path | None = None,
-    ):
-        super().__init__(
-            dataset_name="gov_report",
-            query_id=query_id,
-            data_dir=data_dir,
-            score_col=score_col,
-            label_col=label_col,
-            data_path=data_path,
-        )
+    dataset_name: str = "gov_report"
 
 
 class _ScenarioRegistry(dict):
@@ -1357,29 +1047,31 @@ class _ScenarioRegistry(dict):
         raise KeyError(f"Unknown scenario '{key}'")
 
 
-SCENARIOS = _ScenarioRegistry({
-    # Adversarial / Floor Stress Tests
-    "uninformative_proxy_floor": UninformativeProxyFloor(),
-    "precision_tail_overfit": PrecisionTailOverfit(),
-    "proxy_miscalibrated": ProxyMiscalibrated(),
-    "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin(),
-    "recall_boundary_critical_margin": RecallBoundaryCriticalMargin(),
-    "trapped_head": TrappedHead(),
-    # Semantic Database Operators / Workloads
-    "benign": Benign(),
-    "semantic_join_needle": SemanticJoinNeedle(),
-    "discrete_lexical_gate": DiscreteLexical(),
-    "power_law_tail_leakage": PowerLawTailLeakage(),
-    # Real Benchmarks (SUPG)
-    "supg_onto": SUPGOnto(),
-    "supg_imagenet": SUPGImageNet(),
-    "supg_jackson": SUPGJackson(),
-    "supg_tacred": SUPGTACRED(),
-    # ScaleDoc Benchmarks (defaults: query 0)
-    "scaledoc_pubmed_q0": ScaleDocPubMed(query_id='0'),
-    "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id='0'),
-    "scaledoc_gov_report_q0": ScaleDocGovReport(query_id='0'),
-})
+SCENARIOS = _ScenarioRegistry(
+    {
+        # Adversarial / Floor Stress Tests
+        "uninformative_proxy_floor": UninformativeProxyFloor(),
+        "precision_tail_overfit": PrecisionTailOverfit(),
+        "proxy_miscalibrated": ProxyMiscalibrated(),
+        "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin(),
+        "recall_boundary_critical_margin": RecallBoundaryCriticalMargin(),
+        "trapped_head": TrappedHead(),
+        # Semantic Database Operators / Workloads
+        "benign": Benign(),
+        "semantic_join_needle": SemanticJoinNeedle(),
+        "discrete_lexical_gate": DiscreteLexical(),
+        "power_law_tail_leakage": PowerLawTailLeakage(),
+        # Real Benchmarks (SUPG)
+        "supg_onto": SUPGOnto(),
+        "supg_imagenet": SUPGImageNet(),
+        "supg_jackson": SUPGJackson(),
+        "supg_tacred": SUPGTACRED(),
+        # ScaleDoc Benchmarks (defaults: query 0)
+        "scaledoc_pubmed_q0": ScaleDocPubMed(query_id="0"),
+        "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id="0"),
+        "scaledoc_gov_report_q0": ScaleDocGovReport(query_id="0"),
+    }
+)
 
 
 __all__ = [
@@ -1410,4 +1102,3 @@ __all__ = [
     "ScaleDocGovReport",
     "SCENARIOS",
 ]
-

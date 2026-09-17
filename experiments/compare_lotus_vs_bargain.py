@@ -92,7 +92,7 @@ def parse_args():
         "--num-trials",
         type=int,
         default=100,
-        help="Number of Monte Carlo trials (default: 100)"
+        help="Number of Monte Carlo trials (default: 100)",
     )
     parser.add_argument(
         "--sample-size",
@@ -101,55 +101,49 @@ def parse_args():
         help=(
             "ACTIS initial sample size: positive integer count or 'auto' "
             "(default: 'auto')"
-        )
+        ),
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=100,
-        help="ACTIS batch sample size (default: 100)"
+        help="ACTIS batch sample size (default: 100)",
     )
     parser.add_argument(
-        "--pop-size",
-        type=int,
-        default=None,
-        help="Population size (default: None)"
+        "--pop-size", type=int, default=None, help="Population size (default: None)"
     )
     parser.add_argument(
         "--target-recall",
         type=float,
         default=0.90,
-        help="Target recall (default: 0.90)"
+        help="Target recall (default: 0.90)",
     )
     parser.add_argument(
         "--target-precision",
         type=float,
         default=0.90,
-        help="Target precision (default: 0.90)"
+        help="Target precision (default: 0.90)",
     )
     parser.add_argument(
         "--delta",
         type=float,
         default=0.05,
-        help="Failure probability delta (default: 0.05)"
+        help="Failure probability delta (default: 0.05)",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed (default: 42)"
+        "--seed", type=int, default=42, help="Random seed (default: 42)"
     )
     parser.add_argument(
         "--num-thresholds",
         type=int,
         default=20,
-        help="Number of candidates for thresholds for ACTIS (default: 20)"
+        help="Number of candidates for thresholds for ACTIS (default: 20)",
     )
     parser.add_argument(
         "--num-thresholds-upper",
         type=int,
         default=500,
-        help="Number of candidates for upper threshold for ACTIS (default: 500)"
+        help="Number of candidates for upper threshold for ACTIS (default: 500)",
     )
     parser.add_argument(
         "--max-sample-size",
@@ -159,22 +153,16 @@ def parse_args():
         "fraction in (0, 1] (default: 0.5).",
     )
     parser.add_argument(
-        "--exp-name",
-        type=str,
-        default="comparison",
-        help="Experiment name"
+        "--exp-name", type=str, default="comparison", help="Experiment name"
     )
     parser.add_argument(
-        "--output-json",
-        type=str,
-        default=None,
-        help="Output JSON path"
+        "--output-json", type=str, default=None, help="Output JSON path"
     )
     parser.add_argument(
         "--alpha",
         type=float,
         default=0.4,
-        help="Defensive mixing weight for importance sampling (default: 0.4)"
+        help="Defensive mixing weight for importance sampling (default: 0.4)",
     )
     parser.add_argument(
         "--proposal-method",
@@ -196,7 +184,7 @@ def parse_args():
         help=(
             "Minimum number of positive labels before adaptive stopping "
             "(default: 'auto')"
-        )
+        ),
     )
     parser.add_argument(
         "--v0",
@@ -211,7 +199,7 @@ def parse_args():
         help=(
             "Whether to enable heuristic protection for anytime-valid FWER control "
             "when operating in the non-asymptotic regime (default: True)"
-        )
+        ),
     )
     parser.add_argument(
         "--variance-ratio-bound",
@@ -230,7 +218,37 @@ def parse_args():
         "--include-raw",
         action=BooleanOptionalAction,
         default=True,
-        help="Whether to include raw per-trial metrics in output summaries (default: True)",
+        help=(
+            "Whether to include raw per-trial metrics in output summaries "
+            "(default: True)"
+        ),
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="experiments/results",
+        help=(
+            "Root directory for hierarchical results storage "
+            "(default: experiments/results)"
+        ),
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action=BooleanOptionalAction,
+        default=True,
+        help=(
+            "Whether to skip runner runs whose target result JSON already exists "
+            "(default: True)"
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Force re-running even if target results already exist "
+            "(disables --skip-existing)"
+        ),
     )
     return parser.parse_args(), parser
 
@@ -302,7 +320,7 @@ def main():
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
             variance_ratio_bound=args.variance_ratio_bound,
-            max_jump_ratio_bound=args.max_jump_ratio_bound
+            max_jump_ratio_bound=args.max_jump_ratio_bound,
         ),
         ACTISRunner(
             name="actis_adaptive_asymptotic",
@@ -319,7 +337,7 @@ def main():
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
             variance_ratio_bound=args.variance_ratio_bound,
-            max_jump_ratio_bound=args.max_jump_ratio_bound
+            max_jump_ratio_bound=args.max_jump_ratio_bound,
         ),
         ACTISRunner(
             name="actis_adaptive",
@@ -340,15 +358,16 @@ def main():
             num_thresholds=20,
             sample_step=100,
         ),
-        LotusRunner(
-            name="lotus_original"
-        ),
-        ScaleDocRunner(
-            name="scaledoc"
-        )
+        LotusRunner(name="lotus_original"),
+        ScaleDocRunner(name="scaledoc"),
     ]
 
     for scenario in scenarios_to_run:
+        if args.pop_size is not None:
+            scenario.pop_size = args.pop_size
+        if args.seed is not None:
+            scenario.seed = args.seed
+
         suite_res = run_evaluation_suite(
             scenario=scenario,
             runners=runners,
@@ -360,13 +379,15 @@ def main():
             seed=args.seed,
             exp_name=args.exp_name,
             include_raw=args.include_raw,
+            results_dir=args.results_dir,
+            skip_existing=args.skip_existing and not args.force,
         )
         print_comparison_table(suite_res)
         all_records.extend(suite_res)
 
     output_path = args.output_json
     if not output_path:
-        res_dir = Path("experiments/results") / args.exp_name
+        res_dir = Path(args.results_dir) / args.exp_name
         json_name = f"comparison_delta_{args.delta}_gamma_{args.target_recall}.json"
         output_path = res_dir / json_name
     else:

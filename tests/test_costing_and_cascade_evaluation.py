@@ -235,9 +235,9 @@ def test_summarize_runner_trials_hierarchical_cost_and_include_raw():
         include_raw=True,
     )
 
-    assert "raw_recalls" in summary_with_raw
-    assert "raw_precisions" in summary_with_raw
-    assert "raw_runtimes" in summary_with_raw
+    assert "raw" in summary_with_raw["precision"]
+    assert "raw" in summary_with_raw["recall"]
+    assert "raw" in summary_with_raw["runtime"]
     assert "raw" in summary_with_raw["cost"]["oracle"]["call_rate"]
     assert summary_with_raw["cost"]["oracle"]["call_rate"]["mean"] == pytest.approx(0.25)
     assert summary_with_raw["cost"]["oracle"]["monetary"]["mean"] == pytest.approx(0.625)
@@ -260,9 +260,9 @@ def test_summarize_runner_trials_hierarchical_cost_and_include_raw():
         include_raw=False,
     )
 
-    assert "raw_recalls" not in summary_no_raw
-    assert "raw_precisions" not in summary_no_raw
-    assert "raw_runtimes" not in summary_no_raw
+    assert "raw" not in summary_no_raw["precision"]
+    assert "raw" not in summary_no_raw["recall"]
+    assert "raw" not in summary_no_raw["runtime"]
     assert "raw" not in summary_no_raw["cost"]["oracle"]["call_rate"]
     assert summary_no_raw["cost"]["oracle"]["call_rate"]["mean"] == pytest.approx(0.25)
 
