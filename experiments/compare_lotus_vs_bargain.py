@@ -265,7 +265,11 @@ def main():
                 continue
             if sc_clean != "all" and sc_clean not in SCENARIOS:
                 valid = ", ".join(["all"] + list(SCENARIOS.keys()))
-                parser.error(f"invalid scenario '{sc_clean}'. Choose from: {valid}")
+                parser.error(
+                    f"invalid scenario '{sc_clean}'. Choose from: {valid}, or "
+                    "dynamic ScaleDoc queries "
+                    "(e.g. 'scaledoc_pubmed_q1', 'scaledoc_pubmed_q0_ext')"
+                )
             scenario_keys.append(sc_clean)
 
     if "all" in scenario_keys:

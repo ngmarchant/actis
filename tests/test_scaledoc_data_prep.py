@@ -269,6 +269,11 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     assert np.array_equal(labels, [True, False, True, False])
 
     # Dynamic registry lookup test
+    assert "scaledoc_pubmed_q0" in SCENARIOS
+    assert "scaledoc_pubmed_q12" in SCENARIOS
+    assert "scaledoc_big_patent_q3_ext" in SCENARIOS
+    assert "invalid_scenario" not in SCENARIOS
+
     dynamic_sc = SCENARIOS["scaledoc_pubmed_q0"]
     assert isinstance(dynamic_sc, ScaleDocDataset)
     assert dynamic_sc.dataset_name == "pubmed"
@@ -278,6 +283,12 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     assert isinstance(dynamic_sc5, ScaleDocDataset)
     assert dynamic_sc5.dataset_name == "gov_report"
     assert dynamic_sc5.query_id == "5"
+
+    sc12 = SCENARIOS.get("scaledoc_pubmed_q12")
+    assert sc12 is not None
+    assert sc12.name == "scaledoc_pubmed_q12"
+    assert sc12.query_id == "12"
+    assert SCENARIOS.get("invalid_scenario") is None
 
 
 def test_read_dataframe_hf_disk(tmp_path):

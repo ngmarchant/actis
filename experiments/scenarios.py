@@ -1037,14 +1037,36 @@ class _ScenarioRegistry(dict):
     'scaledoc_pubmed_q0_ext').
     """
 
-    def __missing__(self, key: str) -> BaseScenario:
+    def _parse_dynamic_key(self, key: str) -> BaseScenario | None:
         m = re.match(r"^scaledoc_(pubmed|big_patent|gov_report)_q(\d+(?:_ext)?)$", key)
         if m:
             ds_name, qid = m.group(1), m.group(2)
-            scenario = ScaleDocDataset(dataset_name=ds_name, query_id=qid)
-            self[key] = scenario
-            return scenario
+            return ScaleDocDataset(dataset_name=ds_name, query_id=qid)
+        return None
+
+    def __contains__(self, key: object) -> bool:
+        if super().__contains__(key):
+            return True
+        if isinstance(key, str):
+            scenario = self._parse_dynamic_key(key)
+            if scenario is not None:
+                self[key] = scenario
+                return True
+        return False
+
+    def __missing__(self, key: object) -> BaseScenario:
+        if isinstance(key, str):
+            scenario = self._parse_dynamic_key(key)
+            if scenario is not None:
+                self[key] = scenario
+                return scenario
         raise KeyError(f"Unknown scenario '{key}'")
+
+    def get(self, key: object, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 SCENARIOS = _ScenarioRegistry(
