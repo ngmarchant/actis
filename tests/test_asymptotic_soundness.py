@@ -800,5 +800,92 @@ class TestRefinedAsymptoticDiagnostics:
         assert np.all(np.isfinite(res._null_failure_prob_P)) and np.all(res._null_failure_prob_P > 0)
 
 
+class TestBoundaryNullVarianceBounds:
+    def test_precision_null_cap_and_theoretical_ceiling(self):
+        # High positive prevalence, but compressed proxy scores (mean ~0.26)
+        rng = np.random.default_rng(42)
+        N = 1000
+        scores = rng.beta(2, 6, size=N) * 0.7  # max score < 0.7
+        thresholds = np.linspace(0.0, 0.6, 20)
+        thresholds_upper = np.linspace(0.1, 0.65, 50)
+        gamma_R = 0.95
+        gamma_P = 0.95
+        delta = 0.05
+        eff_n_0 = min(1000.0, max(50.0, 0.1 * N))
+
+        # Unweighted
+        res = compute_prior_and_target_var(
+            scores=scores,
+            gamma_R=gamma_R,
+            gamma_P=gamma_P,
+            delta=delta,
+            thresholds=thresholds,
+            thresholds_upper=thresholds_upper,
+            weights=None,
+        )
+
+        # 1. Target variance must never exceed theoretical ceiling eff_n_0 * (1 - gamma) * max_weight
+        v_0_max_R = eff_n_0 * (1.0 - gamma_R) * 1.0
+        v_0_max_P = eff_n_0 * (1.0 - gamma_P) * 1.0
+        assert np.all(res._target_R <= v_0_max_R + 1e-12)
+        assert np.all(res._target_P <= v_0_max_P + 1e-12)
+
+        # 2. Weighted (uniform) should match unweighted bitwise
+        res_weighted = compute_prior_and_target_var(
+            scores=scores,
+            gamma_R=gamma_R,
+            gamma_P=gamma_P,
+            delta=delta,
+            thresholds=thresholds,
+            thresholds_upper=thresholds_upper,
+            weights=np.ones(N),
+        )
+        np.testing.assert_allclose(res._target_R, res_weighted._target_R, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(res._target_P, res_weighted._target_P, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(res._prior_R, res_weighted._prior_R, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(res._prior_P, res_weighted._prior_P, rtol=1e-12, atol=1e-12)
+
+    def test_weighted_theoretical_ceiling(self):
+        # Non-uniform importance weights
+        rng = np.random.default_rng(123)
+        N = 500
+        scores = rng.uniform(0.1, 0.9, size=N)
+        q = scores + 0.1
+        q /= q.sum()
+        weights = 1.0 / (N * q)
+
+        thresholds = np.linspace(0.1, 0.8, 15)
+        thresholds_upper = np.linspace(0.2, 0.85, 25)
+        gamma_R = 0.90
+        gamma_P = 0.90
+        delta = 0.05
+        eff_n_0 = min(1000.0, max(50.0, 0.1 * N))
+
+        res = compute_prior_and_target_var(
+            scores=scores,
+            gamma_R=gamma_R,
+            gamma_P=gamma_P,
+            delta=delta,
+            thresholds=thresholds,
+            thresholds_upper=thresholds_upper,
+            weights=weights,
+        )
+
+        order = np.argsort(scores)
+        weights_sorted = weights[order]
+        idx_lower = np.searchsorted(scores[order], thresholds, side="left")
+        suffix_max_weight = np.append(
+            np.maximum.accumulate(weights_sorted[::-1])[::-1],
+            np.max(weights),
+        )
+        w_max_lower = suffix_max_weight[idx_lower]
+
+        v_0_max_R = eff_n_0 * (1.0 - gamma_R) * w_max_lower
+        v_0_max_P = eff_n_0 * (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
+
+        assert np.all(res._target_R <= v_0_max_R + 1e-12)
+        assert np.all(res._target_P <= v_0_max_P + 1e-12)
+
+
 
 

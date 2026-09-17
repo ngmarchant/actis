@@ -240,16 +240,32 @@ For non-anchor candidate thresholds, empirical quadratic variation must accumula
 V_t^{(R)}(i^*) &\ge 0.05 \cdot v_{0, \text{target}}^{(R)}[i^*], \label{eq:check_var_r} \\
 V_t^{(P)}(j^*, i^*) &\ge 0.05 \cdot v_{0, \text{target}}^{(P)}[j^*, i^*], \label{eq:check_var_p}
 \end{align}
-where target process variances are defined directly from population proxy surrogate variances:
+where target process variances are bounded by population proxy surrogate variances subject to exact boundary null constraints:
 \begin{align}
-v_{0, \text{target}}^{(R)}[i] &\coloneqq n_0 \cdot \hat{\sigma}_R^2[i], \label{eq:v0_target_recall} \\
-v_{0, \text{target}}^{(P)}[j, i] &\coloneqq n_0 \cdot \hat{\sigma}_P^2[j, i], \label{eq:v0_target_precision}
+v_{0, \text{target}}^{(R)}[i] &\coloneqq \min\Big(n_0 \cdot \hat{\sigma}_R^2[i], \; n_0 (1 - \gamma_R) w_{\max}(\tau_{l, i})\Big), \label{eq:v0_target_recall} \\
+v_{0, \text{target}}^{(P)}[j, i] &\coloneqq \min\Big(n_0 \cdot \hat{\sigma}_P^2[j, i], \; n_0 (1 - \gamma_P) w_{\max}(\tau_{l, i})\Big), \label{eq:v0_target_precision}
 \end{align}
-with:
+where $w_{\max}(\tau_{l, i}) \coloneqq \max_{k: s(x_k) \ge \tau_{l, i}} w(x_k)$, with increment second moments:
 \begin{align}
-\hat{\sigma}_R^2[i] &\coloneqq \frac{(1 - \gamma_R)^2}{N}\sum_{k: s(x_k) \ge \tau_{l, i}} s(x_k) w(x_k) + \frac{\gamma_R^2}{N}\sum_{k: s(x_k) < \tau_{l, i}} s(x_k) w(x_k), \label{eq:sigma_R_def} \\
-\hat{\sigma}_P^2[j, i] &\coloneqq \frac{\gamma_P^2}{N}\sum_{k: s(x_k) \ge \tau_{u, j}} (1 - s(x_k)) w(x_k) + \frac{(1 - \gamma_P)^2}{N}\sum_{k: s(x_k) \ge \tau_{l, i}} s(x_k) w(x_k). \label{eq:sigma_P_def}
+\hat{\sigma}_R^2[i] &\coloneqq (1 - \gamma_R)^2 \hat{\pi}_{\text{TP}}[i] + \gamma_R^2 \hat{\pi}_{\text{FN}}[i], \label{eq:sigma_R_def} \\
+\hat{\sigma}_P^2[j, i] &\coloneqq \gamma_P^2 \hat{\pi}_{\text{FP}}[j, i] + (1 - \gamma_P)^2 \hat{\pi}_{\text{TP}}[i]. \label{eq:sigma_P_def}
 \end{align}
+Here, $\hat{\pi}_{\text{TP}}[i] \coloneqq \frac{1}{N}\sum_{k: s(x_k) \ge \tau_{l, i}} s(x_k) w(x_k)$ is the proxy true-positive mass, and the error masses are capped by their boundary null limits:
+\begin{align}
+\hat{\pi}_{\text{FN}}[i] &\coloneqq \min\left( \frac{1}{N}\sum_{k: s(x_k) < \tau_{l, i}} s(x_k) w(x_k), \; \frac{1 - \gamma_R}{\gamma_R} \hat{\pi}_{\text{TP}}[i] \right), \label{eq:pi_fn_cap} \\
+\hat{\pi}_{\text{FP}}[j, i] &\coloneqq \min\left( \frac{1}{N}\sum_{k: s(x_k) \ge \tau_{u, j}} (1 - s(x_k)) w(x_k), \; \frac{1 - \gamma_P}{\gamma_P} \hat{\pi}_{\text{TP}}[i] \right). \label{eq:pi_fp_cap}
+\end{align}
+
+\paragraph{Principled Boundary Null Caps and Variance Ceilings.}
+Under the precision null hypothesis $H_0^{(P)}(j, i): \text{Precision}(\tau_{u, j}, \tau_{l, i}) \le \gamma_P$, the true negative mass routed to automated acceptance cannot exceed $\frac{1 - \gamma_P}{\gamma_P} \cdot \pi_{\text{TP}}(\tau_{l, i})$. When proxy classifiers produce compressed or poorly calibrated scores (for instance, when proxy scores are centered near $0.25$ despite an underlying $90\%$ true positive prevalence, as in clinical or biomedical queries), treating $1 - s(x)$ directly as the negative class probability overestimates false positive mass by orders of magnitude. 
+
+Because false positive increments are multiplied by $\gamma_P^2 = (0.95)^2 = 0.9025$ whereas true positive increments are multiplied by $(1 - \gamma_P)^2 = (0.05)^2 = 0.0025$ (a severe $361:1$ penalty ratio), proxy score miscalibration inflates the target variance $v_{0, \text{target}}^{(P)}$ by $20\times$ or more. This inflation forces Diagnostic~1 to demand far more empirical quadratic variation than the true data-generating process can accumulate over $n_0$ samples, causing the backward search over upper thresholds to halt prematurely at excessively conservative candidates.
+
+Capping $\hat{\pi}_{\text{FP}}[j, i]$ at $\frac{1 - \gamma_P}{\gamma_P} \hat{\pi}_{\text{TP}}[i]$ guarantees that the surrogate model never assumes an error rate worse than the very null boundary being tested. Under this boundary null cap:
+\begin{equation}
+\sigma_P^2[j, i] = \gamma_P^2 \left(\frac{1 - \gamma_P}{\gamma_P} \hat{\pi}_{\text{TP}}[i]\right) + (1 - \gamma_P)^2 \hat{\pi}_{\text{TP}}[i] = (1 - \gamma_P) \hat{\pi}_{\text{TP}}[i] \le (1 - \gamma_P) w_{\max}(\tau_{l, i}).
+\end{equation}
+An identical boundary null identity holds for recall: $\sigma_R^2[i] \le (1 - \gamma_R) \hat{\pi}_{\text{TP}}[i] \le (1 - \gamma_R) w_{\max}(\tau_{l, i})$. Enforcing these boundary caps in~\eqref{eq:v0_target_recall}--\eqref{eq:pi_fp_cap} completely prevents proxy distortion from artificially blocking early stopping on valid thresholds, without introducing heuristic hyper-parameters or compromising anytime-valid coverage.
 
 \paragraph{Rationale: Prior Variance Floor vs.\ Process Variance Target.}
 In the theory of Gaussian mixture supermartingales~\cite{robbins1970,howard2021}, $v_0$ is the variance of the normal mixing distribution $\mathcal{N}(0, v_0)$ placed over the mean effect $\mu$. To optimize sequential power and minimize the confidence sequence width at a planned sample horizon $n_0$, sequential analysis dictates setting $v_0 = \mathbb{E}[V_{n_0}] = n_0 \sigma^2$. This is precisely the target process variance $v_{0, \text{target}}$.
@@ -540,9 +556,9 @@ To provide developers with a clear and honest assessment of the calibration pipe
 Importance weights $w(x)$ & Proposal $q(x)$ design & Exact & Unbiased ($\mathbb{E}_q[wY] = \mathbb{E}[Y]$); poor proxy increases variance \\
 Candidate lattice $\mathcal{T}$ & Quantile threshold grid & Exact & Family-wise Bonferroni correction; poor proxy hurts cascade utility \\
 Jump bounds $b_R, b_P$ & Increment bound & Exact & Deterministic bounds derived from known proposal weights $w_{\max}$ \\
-Prior variance $v_0$ & Surrogate $\hat{\sigma}^2$ & Clamped & Target $v_{0, \text{target}}$ is proxy-dependent, but bounded below by $v_{0, \text{floor}}$ \\ \midrule
+Prior variance $v_0$ & Surrogate $\hat{\sigma}^2$ & Clamped & Target $v_{0, \text{target}}$ bounded below by $v_{0, \text{floor}}$ and above by boundary null ceiling \\ \midrule
 Gaussian CS ($M_t$) & -- & Asymptotic & Continuous diffusion approximation; discrete Berry-Esseen tail error at small $t$ \\
-Diag.~1 rate check & Benchmark $v_{0, \text{target}}$ & Heuristic & Surrogate $\hat{\sigma}^2$ underestimation is lenient (compensated by Diag.~3); $5\%$ cutoff is empirical \\
+Diag.~1 rate check & Benchmark $v_{0, \text{target}}$ & Heuristic & Benchmark $v_{0, \text{target}}$ capped by null boundary limits; $5\%$ cutoff is empirical \\
 Diag.~2 jump bound & -- & Heuristic & Evaluates realized increments only; blind to unobserved rare jumps \\
 Diag.~3 binomial check & Proposal ratio $\hat{\eta}$ & Heuristic & Evaluated repeatedly over time; uncorrected $\delta_P = \delta/2$; binomial sampling misspecification \\ \bottomrule
 \end{tabular}
@@ -555,7 +571,7 @@ Diag.~3 binomial check & Proposal ratio $\hat{\eta}$ & Heuristic & Evaluated rep
     \item \textbf{Horvitz-Thompson Unbiasedness}: The proposal distribution $q(x)$ is constructed from proxy scores to oversample items near decision thresholds. Horvitz-Thompson weighting ($w(x) = \frac{1}{N q(x)}$) ensures that margin estimators are strictly unbiased: $\mathbb{E}_q[w(X) Y] = \mathbb{E}[Y]$. If proxy scores are noisy or uninformative, sampling variance increases (requiring more samples to stop), but the supermartingale property $\mathbb{E}[M_t \mid \mathcal{F}_{t-1}] \le M_{t-1}$ under $H_0$ remains exact.
     \item \textbf{Family-Wise Error Control on Candidate Lattice}: Candidate thresholds are selected from proxy percentiles prior to sampling. Multiple testing across the candidate lattice is controlled family-wise via Bonferroni correction. Poor proxy scores may result in candidate pairs with suboptimal operational utility (e.g., routing more queries to the oracle), but any certified threshold unconditionally satisfies the target recall and precision constraints.
     \item \textbf{Deterministic Jump Bounds and Variance Floor}: The jump bounds $b_R$ and $b_P$, and the resulting variance floor $v_{0, \text{floor}} = \frac{2 b^2}{\log(2/\delta)}$, depend strictly on the maximum proposal weight $w_{\max}$ above candidate thresholds and the target error rate $\delta$. They do not assume any relationship between $s(x)$ and $y(x)$.
-    \item \textbf{Martingale Prior Variance Clamp}: In setting prior variance $v_0 = \max(v_{0, \text{floor}}, v_{0, \text{target}})$, the target variance $v_{0, \text{target}} = n_0 \hat{\sigma}^2$ relies on proxy scores as surrogates for true labels via~\eqref{eq:sigma_R_def}--\eqref{eq:sigma_P_def}. However, taking the maximum with $v_{0, \text{floor}}$ ensures that $v_0$ cannot collapse toward zero under proxy underestimation, guarding the supermartingale against single-jump boundary crossing. If the proxy overestimates variance, $v_0$ is inflated, which is conservative (widening confidence bands).
+    \item \textbf{Martingale Prior Variance Clamp and Ceilings}: In setting prior variance $v_0 = \max(v_{0, \text{floor}}, v_{0, \text{target}})$, the target variance $v_{0, \text{target}} = n_0 \hat{\sigma}^2$ relies on proxy scores as surrogates for true labels via~\eqref{eq:sigma_R_def}--\eqref{eq:sigma_P_def}. However, taking the maximum with $v_{0, \text{floor}}$ ensures that $v_0$ cannot collapse toward zero under proxy underestimation, guarding the supermartingale against single-jump boundary crossing. Conversely, capping surrogate error mass at its exact boundary null limit and bounding $v_{0, \text{target}} \le n_0 (1 - \gamma) w_{\max}$ prevents proxy score compression from inflating $v_0$ and diluting supermartingale wealth growth.
 \end{enumerate}
 
 \paragraph{Asymptotic Foundation and Its Finite-Sample Blind Spot.}
@@ -570,7 +586,7 @@ We emphasize that \textbf{none of the three runtime diagnostics provides an unco
         \item \emph{Surrogate Benchmark Underestimation}: Because $v_{0, \text{target}} = n_0 \hat{\sigma}^2$ is estimated using proxy scores as label surrogates, severe underestimation of positive prevalence produces $\hat{\sigma}^2 \approx 0$, setting an artificially lenient benchmark.
         \item \emph{Heuristic Threshold}: Demanding $5\%$ cumulative variance accumulation is an operational rule of thumb, not a theorem guaranteeing that the boundary crossing probability is bounded by $\delta$.
     \end{itemize}
-    Crucially, under-benchmarking by Diagnostic~1 is \textbf{actively compensated by Diagnostic~3}: stopping is impossible unless $n \ge n_{\text{binom}}(k; p_0, \delta) \ge n_{\text{binom}}(0) \approx \frac{\log(1/\delta)}{p_0}$ (typically $70\text{--}90$ samples), blocking premature stopping even if Diagnostic~1 is satisfied on sample $t=2$. Conversely, if the proxy overestimates variance, Diagnostic~1 simply delays early stopping, which is conservative.
+    Crucially, under-benchmarking by Diagnostic~1 is \textbf{actively compensated by Diagnostic~3}: stopping is impossible unless $n \ge n_{\text{binom}}(k; p_0, \delta) \ge n_{\text{binom}}(0) \approx \frac{\log(1/\delta)}{p_0}$ (typically $70\text{--}90$ samples), blocking premature stopping even if Diagnostic~1 is satisfied on sample $t=2$. Conversely, potential overestimation of process variance by uncalibrated proxies is strictly clamped by the exact boundary null caps and theoretical ceiling ($v_{0, \text{target}} \le n_0 (1 - \gamma) w_{\max}$), ensuring Diagnostic~1 does not permanently block stopping on valid thresholds.
 
     \item \textbf{Diagnostic~2 (Jump Dispersion Bound)}:
     Diagnostic~2 checks that $\hat{\rho}_{\max} \le 0.50$, verifying that no single realized increment accounts for more than half of the accumulated quadratic variation.

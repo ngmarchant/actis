@@ -766,12 +766,22 @@ def compute_prior_and_target_var(
         pos_mass_ge_lower = suffix_sum_pos[idx_lower] / N
         pos_mass_lt_lower = prefix_sum_pos[idx_lower] / N
 
+        # Boundary null cap for Recall: under H_0 (Recall <= gamma_R),
+        # false negative mass cannot exceed (1 - gamma_R)/gamma_R * true positive mass.
+        # This prevents proxy score inaccuracies from inflating expected process variance.
+        null_fn_cap = ((1.0 - gamma_R) / gamma_R) * pos_mass_ge_lower
+        pos_mass_lt_lower = np.minimum(pos_mass_lt_lower, null_fn_cap)
+
         b_R = (1.0 - gamma_R) * max_weight
         v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
         sigma2_R = (
             (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R**2) * pos_mass_lt_lower
         )
         v_0_target_R = eff_n_0 * sigma2_R
+
+        # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_R) * max_weight
+        v_0_max_R = eff_n_0 * (1.0 - gamma_R) * max_weight
+        v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
         v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
         null_failure_prob_R = np.full(M_lower, 1 - gamma_R, dtype=np.float64)
 
@@ -784,14 +794,25 @@ def compute_prior_and_target_var(
             0.0,
             (N - idx_upper) / N * max_weight - pos_mass_ge_upper
         )
-        neg_var_upper = (gamma_P**2) * neg_mass_ge_upper
+
+        # Boundary null cap for Precision: under H_0 (Precision <= gamma_P),
+        # false positive mass cannot exceed (1 - gamma_P)/gamma_P * true positive mass.
+        # Capping neg_mass_ge_upper eliminates proxy distortion (e.g. compressed scores)
+        # while preserving exact boundary null validity.
+        null_fp_cap = ((1.0 - gamma_P) / gamma_P) * pos_mass_ge_lower[np.newaxis, :]
+        neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
+        neg_var_upper = (gamma_P**2) * neg_mass_ge_upper_2d
         pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
 
         b_P = (1.0 - gamma_P) * max_weight
         v_0_floor_P = (2.0 * b_P**2) / log_delta_P_inv
 
-        total_var = neg_var_upper[:, np.newaxis] + pos_var_lower[np.newaxis, :]
+        total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
         v_0_target_P = eff_n_0 * total_var
+
+        # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_P) * max_weight
+        v_0_max_P = eff_n_0 * (1.0 - gamma_P) * max_weight
+        v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
         v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
         null_failure_prob_P = np.full((M_upper, M_lower), 1 - gamma_P, dtype=np.float64)
 
@@ -829,6 +850,11 @@ def compute_prior_and_target_var(
     pos_mass_ge_lower = suffix_sum_pos_prob[idx_lower] / N
     pos_mass_lt_lower = prefix_sum_pos_prob[idx_lower] / N
 
+    # Boundary null cap for Recall: under H_0 (Recall <= gamma_R),
+    # false negative mass cannot exceed (1 - gamma_R)/gamma_R * true positive mass.
+    null_fn_cap = ((1.0 - gamma_R) / gamma_R) * pos_mass_ge_lower
+    pos_mass_lt_lower = np.minimum(pos_mass_lt_lower, null_fn_cap)
+
     # Safety floor for recall (incorporates positive jumps only)
     b_R = (1.0 - gamma_R) * w_max_lower
     v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
@@ -838,6 +864,10 @@ def compute_prior_and_target_var(
         (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R ** 2) * pos_mass_lt_lower
     )
     v_0_target_R = eff_n_0 * sigma2_R
+
+    # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_R) * w_max_lower
+    v_0_max_R = eff_n_0 * (1.0 - gamma_R) * w_max_lower
+    v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
     v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
 
     # Proposal-adjusted null failure probability for recall via partition density:
@@ -880,7 +910,12 @@ def compute_prior_and_target_var(
         0.0,
     )
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
-    neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper
+
+    # Boundary null cap for Precision: under H_0 (Precision <= gamma_P),
+    # false positive mass cannot exceed (1 - gamma_P)/gamma_P * true positive mass.
+    null_fp_cap = ((1.0 - gamma_P) / gamma_P) * pos_mass_ge_lower[np.newaxis, :]
+    neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
+    neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper_2d
     pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
 
     # Safety floor for precision (incorporates positive jumps only)
@@ -889,8 +924,12 @@ def compute_prior_and_target_var(
 
     # 2D second moment matrix: sum of false-positive variance (from upper threshold)
     # and true-positive variance (from lower threshold) via NumPy broadcasting
-    total_var = neg_var_upper[:, np.newaxis] + pos_var_lower[np.newaxis, :]
+    total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
     v_0_target_P = eff_n_0 * total_var
+
+    # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_P) * w_max_lower
+    v_0_max_P = eff_n_0 * (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
+    v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
     v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
 
     q_fp = q_sorted * (1.0 - scores_sorted)
