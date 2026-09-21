@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CLI Tool for preparing benchmark datasets (PubMed, BigPatent, GovReport),
-gathering ground-truth oracle labels, and computing proxy scores.
+CLI tool for preparing benchmark datasets, gathering oracle labels, and
+computing proxy scores.
 """
 
 from __future__ import annotations
@@ -36,11 +36,29 @@ from experiments.data_prep import (  # noqa: E402
     add_proxy_scores,
     get_unprocessed_items,
     load_bigpatent_documents,
+    load_court_documents,
     load_govreport_documents,
     load_pubmed_documents,
-    load_scaledoc_queries,
+    load_queries,
+    load_review_documents,
+    load_screenplay_documents,
+    load_wiki_documents,
     save_dataset,
 )
+
+DATASET_GROUPS = {
+    "pubmed": "scaledoc",
+    "big_patent": "scaledoc",
+    "gov_report": "scaledoc",
+    "court": "bargain",
+    "screenplay": "bargain",
+    "wiki": "bargain",
+    "review": "bargain",
+}
+QUERY_FILES = {
+    "scaledoc": _ROOT / "experiments" / "data" / "scaledoc" / "query.json",
+    "bargain": _ROOT / "experiments" / "data" / "bargain" / "query.json",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         type=str,
         default="pubmed",
-        choices=["pubmed", "big_patent", "gov_report"],
+        choices=sorted(DATASET_GROUPS),
         help="Dataset name to process (default: pubmed)",
     )
     parser.add_argument(
@@ -85,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional path to query.json",
     )
     parser.add_argument(
+        "--source-path",
+        type=str,
+        default=None,
+        help="Local source file for datasets that require one (currently: court)",
+    )
+    parser.add_argument(
         "--oracle-model",
         type=str,
         default="azure/gpt-4o",
@@ -100,13 +124,13 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=str,
         default=None,
-        help="Output directory (default: experiments/data/scaledoc/{dataset})",
+        help="Output directory (default: experiments/data/{group}/{dataset})",
     )
     parser.add_argument(
         "--cache-dir",
         type=str,
         default=None,
-        help="Custom cache directory for Hugging Face datasets",
+        help="Source-download cache directory (default: .cache)",
     )
     parser.add_argument(
         "--config",
@@ -175,22 +199,29 @@ def get_base_documents(
     num_docs: int,
     output_dir: Path,
     cache_dir: Path | str | None = None,
+    source_path: Path | str | None = None,
 ) -> Dataset:
     cache_path = output_dir / "documents.parquet"
     if cache_path.exists():
         import pandas as pd
         df = pd.read_parquet(cache_path)
-        if len(df) >= num_docs:
-            print(
-                f"Loading cached base documents from '{cache_path}' "
-                f"({len(df)} available, returning {num_docs})..."
-            )
+        if len(df) > 0:
+            if len(df) < num_docs:
+                print(
+                    f"Cached documents at '{cache_path}' contain only "
+                    f"{len(df)} documents; using all available documents "
+                    f"instead of downloading again for requested n={num_docs}."
+                )
+            else:
+                print(
+                    f"Loading cached base documents from '{cache_path}' "
+                    f"({len(df)} available, returning {num_docs})..."
+                )
             return Dataset.from_pandas(df.iloc[:num_docs])
         else:
             print(
-                f"Cached documents at '{cache_path}' only contains "
-                f"{len(df)} documents, but {num_docs} were requested. "
-                f"Re-preparing base documents..."
+                f"Cached documents at '{cache_path}' are empty. "
+                "Re-preparing base documents..."
             )
 
     print(
@@ -214,6 +245,19 @@ def get_base_documents(
             n=num_docs,
             split=split,
             cache_dir=cache_dir,
+        )
+    elif dataset_name == "screenplay":
+        ds = load_screenplay_documents(n=num_docs, cache_dir=cache_dir)
+    elif dataset_name == "review":
+        ds = load_review_documents(n=num_docs, cache_dir=cache_dir)
+    elif dataset_name == "wiki":
+        ds = load_wiki_documents(n=num_docs, cache_dir=cache_dir)
+    elif dataset_name == "court":
+        if source_path is None:
+            raise ValueError("The court dataset requires --source-path.")
+        ds = load_court_documents(
+            path=source_path,
+            n=num_docs,
         )
     else:
         raise ValueError(f"Unknown dataset '{dataset_name}'")
@@ -501,9 +545,12 @@ def create_execution_plan(
 def main() -> int:
     args = parse_args()
 
+    cache_dir = Path(args.cache_dir or ".cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
     # If explicit cache directory provided, set HF_HOME environment variable
-    if args.cache_dir:
-        resolved_cache = str(Path(args.cache_dir).resolve())
+    if cache_dir:
+        resolved_cache = str(cache_dir.resolve())
         os.environ["HF_HOME"] = resolved_cache
         print(f"Set HF_HOME cache directory to: '{resolved_cache}'")
 
@@ -514,12 +561,13 @@ def main() -> int:
     output_dir = (
         Path(args.output_dir)
         if args.output_dir
-        else Path("experiments/data/scaledoc") / args.dataset
+        else Path("experiments/data") / DATASET_GROUPS[args.dataset] / args.dataset
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load queries
-    all_queries = load_scaledoc_queries(args.dataset, query_file=args.query_file)
+    query_file = args.query_file or QUERY_FILES[DATASET_GROUPS[args.dataset]]
+    all_queries = load_queries(args.dataset, query_file=query_file)
     query_map: dict[str, str] = {q["q_id"]: q["query"] for q in all_queries}
 
     def sort_key(k: str) -> tuple[int, int]:
@@ -569,7 +617,8 @@ def main() -> int:
         split=split,
         num_docs=args.num_docs,
         output_dir=output_dir,
-        cache_dir=args.cache_dir,
+        cache_dir=cache_dir,
+        source_path=args.source_path,
     )
     print(f"Base documents ready: {len(base_docs)} documents.")
 

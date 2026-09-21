@@ -17,9 +17,13 @@ from experiments.data_prep.labeling import (  # noqa: E402
 from experiments.data_prep.loaders import (  # noqa: E402
     SCALEDOC_QUERY_URL,
     load_bigpatent_documents,
+    load_court_documents,
     load_govreport_documents,
     load_pubmed_documents,
-    load_scaledoc_queries,
+    load_queries,
+    load_review_documents,
+    load_screenplay_documents,
+    load_wiki_documents,
     parse_pubmed_text,
 )
 from experiments.data_prep.models import (  # noqa: E402
@@ -48,7 +52,11 @@ __all__ = [
     "load_pubmed_documents",
     "load_bigpatent_documents",
     "load_govreport_documents",
-    "load_scaledoc_queries",
+    "load_screenplay_documents",
+    "load_review_documents",
+    "load_wiki_documents",
+    "load_court_documents",
+    "load_queries",
     "parse_pubmed_text",
     "add_model_output",
     "add_oracle_labels",

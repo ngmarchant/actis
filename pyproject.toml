@@ -21,8 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=1.25.0,<2.0.0",
-    "confseq",
+    "numpy>=1.25.0,<3.0.0",
     "scipy",
     "pybind11>=2.12.0",
 ]
@@ -31,6 +30,9 @@ dependencies = [
 dev = [
     "ruff>=0.7.2",
     "pytest>=8.0.0",
+]
+reference = [
+    "confseq",
 ]
 experiments = [
     "plotnine",
@@ -45,16 +47,14 @@ experiments = [
     "tqdm>=4.65.0",
     "pyarrow>=14.0.0",
     "py7zr>=0.20.0",
+    "kagglehub>=0.3.0",
+    "convokit>=3.1.0",
 ]
 
 [tool.uv]
-no-build-isolation-package = ["confseq"]
 override-dependencies = [
     "pybind11>=2.12.0",
 ]
-
-[tool.uv.extra-build-dependencies]
-confseq = ["setuptools", "scikit-build"]
 
 [tool.ruff]
 line-length = 88

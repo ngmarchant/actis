@@ -17,6 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from datasets import Dataset, load_dataset
 
 PUBMED_BASE_URL = (
@@ -27,6 +28,10 @@ SCALEDOC_QUERY_URL = (
 )
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "scaledoc"
 DEFAULT_QUERY_FILE = DEFAULT_DATA_DIR / "query.json"
+BARGAIN_DATASET_HANDLES = {
+    "screenplay": "gufukuro/movie-scripts-corpus",
+    "review": "najzeko/steam-reviews-2021",
+}
 
 
 def parse_pubmed_text(text_or_path: str | Path, n: int = 10000) -> list[str]:
@@ -144,6 +149,136 @@ def load_pubmed_documents(
     })
 
 
+def _download_kaggle_dataset(
+    dataset_name: str,
+    cache_dir: str | Path | None,
+) -> Path:
+    """Downloads a Kaggle dataset into a caller-controlled cache directory."""
+    try:
+        import kagglehub
+    except ImportError as error:
+        raise ImportError(
+            "Loading this dataset requires kagglehub. Install the 'experiments' "
+            "extra first."
+        ) from error
+
+    if cache_dir is not None:
+        os.environ["KAGGLEHUB_CACHE"] = str(Path(cache_dir).resolve())
+    return Path(kagglehub.dataset_download(BARGAIN_DATASET_HANDLES[dataset_name]))
+
+
+def load_screenplay_documents(
+    n: int = 10000,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """Loads one movie screenplay per row from Kaggle's movie scripts corpus."""
+    dataset_dir = _download_kaggle_dataset("screenplay", cache_dir)
+    screenplay_dir = (
+        dataset_dir / "screenplay_data" / "data" / "raw_texts" / "raw_texts"
+    )
+    if not screenplay_dir.is_dir():
+        raise FileNotFoundError(
+            "Screenplay text directory not found at "
+            f"'{screenplay_dir}'. The Kaggle dataset layout may have changed."
+        )
+
+    files = sorted(screenplay_dir.glob("*.txt"))[:n]
+    documents = [file.read_text(encoding="utf-8", errors="replace") for file in files]
+    return Dataset.from_dict({
+        "id": list(range(len(documents))),
+        "content": documents,
+    })
+
+
+def load_review_documents(
+    n: int = 10000,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """Loads Steam review text from Kaggle's Steam Reviews 2021 dataset."""
+    import csv
+
+    dataset_dir = _download_kaggle_dataset("review", cache_dir)
+    reviews_file = dataset_dir / "steam_reviews.csv"
+    if not reviews_file.is_file():
+        raise FileNotFoundError(
+            "Steam review CSV not found at "
+            f"'{reviews_file}'. The Kaggle dataset layout may have changed."
+        )
+
+    documents: list[str] = []
+    with reviews_file.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "review" not in reader.fieldnames:
+            raise ValueError(f"Expected a 'review' column in '{reviews_file}'.")
+        for row in reader:
+            review = row["review"]
+            if review:
+                documents.append(review)
+            if len(documents) >= n:
+                break
+
+    return Dataset.from_dict({
+        "id": list(range(len(documents))),
+        "content": documents,
+    })
+
+
+def load_wiki_documents(
+    n: int = 10000,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """Loads one Wikipedia Talk-page conversation per row from ConvoKit."""
+    try:
+        from convokit import Corpus, download
+    except ImportError as error:
+        raise ImportError(
+            "Loading the wiki dataset requires convokit. Install the "
+            "'experiments' extra first."
+        ) from error
+
+    if cache_dir is None:
+        corpus_path = download("wiki-corpus")
+    else:
+        corpus_path = download("wiki-corpus", data_dir=str(cache_dir))
+    corpus = Corpus(filename=corpus_path)
+    documents: list[str] = []
+    for conversation in corpus.iter_conversations():
+        text = "\n".join(
+            utterance.text
+            for utterance in conversation.iter_utterances()
+            if utterance.text
+        )
+        if text:
+            documents.append(text)
+        if len(documents) >= n:
+            break
+
+    return Dataset.from_dict({
+        "id": list(range(len(documents))),
+        "content": documents,
+    })
+
+
+def load_court_documents(
+    path: str | Path,
+    n: int = 10000,
+    text_column: str = "opinion_text",
+) -> Dataset:
+    """Loads Supreme Court opinions from a local CourtListener-derived CSV file."""
+
+    opinions_file = Path(path)
+    if not opinions_file.is_file():
+        raise FileNotFoundError(f"Court opinion CSV not found at '{opinions_file}'.")
+
+    df = pd.read_csv(opinions_file, usecols=[text_column], nrows=n, encoding="utf-8")
+    documents: list[str] = df[text_column].dropna().astype(str).tolist()
+
+    return Dataset.from_dict({
+        "id": list(range(len(documents))),
+        "content": documents,
+    })
+
+
 def load_bigpatent_documents(
     n: int = 10000,
     split: str = "train",
@@ -228,55 +363,33 @@ def load_govreport_documents(
     })
 
 
-def load_scaledoc_queries(
+def load_queries(
     dataset_name: str,
-    query_file: str | Path | None = None,
-    cache_dir: str | Path | None = None,
+    query_file: str | Path,
 ) -> list[dict[str, Any]]:
     """
-    Loads query definitions for a given dataset from ScaleDoc query.json or URL.
+    Loads query definitions for a given dataset from a JSON file or URL.
 
     Args:
         dataset_name: Name of dataset ('pubmed', 'big_patent', 'gov_report', etc.).
-        query_file: Optional path or URL to query.json. If None, downloads from
-            SCALEDOC_QUERY_URL and caches locally.
-        cache_dir: Optional directory to cache downloaded query.json.
+        query_file: Path or URL to a JSON query definition file.
 
     Returns:
         List of dicts with 'q_id' and 'query'.
     """
-    if query_file is not None:
-        query_file_str = str(query_file)
-        if query_file_str.startswith(("http://", "https://")):
-            req = urllib.request.Request(
-                query_file_str, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        else:
-            path = Path(query_file)
-            if not path.exists():
-                raise FileNotFoundError(f"ScaleDoc query file not found at '{path}'.")
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    query_file_str = str(query_file)
+    if query_file_str.startswith(("http://", "https://")):
+        req = urllib.request.Request(
+            query_file_str, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
     else:
-        target_dir = Path(cache_dir or DEFAULT_DATA_DIR)
-        cached_file = target_dir / "query.json"
-
-        if cached_file.exists():
-            with open(cached_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Downloading ScaleDoc queries from {SCALEDOC_QUERY_URL}...")
-            req = urllib.request.Request(
-                SCALEDOC_QUERY_URL, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req) as resp:
-                raw_bytes = resp.read()
-                data = json.loads(raw_bytes.decode("utf-8"))
-            with open(cached_file, "wb") as f:
-                f.write(raw_bytes)
+        path = Path(query_file)
+        if not path.exists():
+            raise FileNotFoundError(f"Query file not found at '{path}'.")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
     # Normalize name keys
     clean_name = dataset_name.lower().replace("-", "_")
