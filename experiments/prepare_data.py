@@ -43,6 +43,10 @@ from experiments.data_prep import (  # noqa: E402
     load_review_documents,
     load_screenplay_documents,
     load_wiki_documents,
+    oracle_checkpoint_path,
+    oracle_output_path,
+    proxy_checkpoint_path,
+    proxy_output_path,
     save_dataset,
 )
 
@@ -111,13 +115,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--oracle-model",
         type=str,
-        default="azure/gpt-4o",
-        help="Model identifier for oracle ground truth (default: azure/gpt-4o)",
+        default="azure/gpt-5.6-terra",
+        help="Model identifier for oracle ground truth (default: azure/gpt-5.6-terra)",
     )
     parser.add_argument(
         "--proxy-model",
         type=str,
-        default=None,
+        default="azure/gpt-5.6-luna",
         help="Model identifier for proxy scores (e.g. llama-3.2-1b)",
     )
     parser.add_argument(
@@ -293,8 +297,10 @@ def load_query_dataset(path: Path, format: str = "parquet") -> Dataset | None:
 class QueryPlanItem:
     qid: str
     query_text: str
-    target_file: Path
-    existing_ds: Dataset | None
+    oracle_path: Path
+    proxy_path: Path | None
+    existing_oracle_ds: Dataset | None
+    existing_proxy_ds: Dataset | None
     has_label: bool
     has_proxy: bool
     needs_oracle: bool
@@ -467,6 +473,8 @@ def create_execution_plan(
     base_docs: Dataset,
     output_dir: Path,
     output_format: str,
+    oracle_model: str,
+    proxy_model: str | None,
     oracle: BaseOracle | None,
     proxy: BaseProxy | None,
     force: bool = False,
@@ -476,29 +484,47 @@ def create_execution_plan(
     doc_items = base_docs["content"]
 
     for qid in selected_qids:
-        if qid not in query_map and qid not in query_map:
+        if qid not in query_map:
             print(f"Warning: Query ID {qid} not found in query list, skipping.")
             continue
 
         q_text = query_map[qid]
-        target_file = output_dir / f"q{qid}.{output_format}"
-        if output_format.lower() == "parquet" and target_file.suffix != ".parquet":
-            target_file = target_file.with_suffix(".parquet")
+        oracle_path = oracle_output_path(output_dir, qid, oracle_model)
+        proxy_path = (
+            proxy_output_path(output_dir, qid, proxy_model)
+            if proxy_model is not None
+            else None
+        )
 
-        existing_ds = load_query_dataset(target_file, format=output_format)
-        has_label = False
-        has_proxy = False
+        existing_oracle_ds = load_query_dataset(oracle_path, format=output_format)
+        existing_proxy_ds = (
+            load_query_dataset(proxy_path, format=output_format)
+            if proxy_path is not None
+            else None
+        )
 
-        if existing_ds is not None and len(existing_ds) >= base_len:
-            has_label = ("label" in existing_ds.column_names) and not force
-            has_proxy = ("proxy_score" in existing_ds.column_names) and not force
+        has_label = (
+            existing_oracle_ds is not None
+            and len(existing_oracle_ds) >= base_len
+            and "label" in existing_oracle_ds.column_names
+            and not force
+        )
+        has_proxy = (
+            existing_proxy_ds is not None
+            and len(existing_proxy_ds) >= base_len
+            and "proxy_score" in existing_proxy_ds.column_names
+            and not force
+        )
 
         needs_oracle = (oracle is not None) and not has_label
         needs_proxy = (proxy is not None) and not has_proxy
 
-        checkpoints_dir = output_dir / "checkpoints"
-        cp_oracle = checkpoints_dir / f"q{qid}_oracle.json"
-        cp_proxy = checkpoints_dir / f"q{qid}_proxy.json"
+        cp_oracle = oracle_checkpoint_path(output_dir, qid, oracle_model)
+        cp_proxy = (
+            proxy_checkpoint_path(output_dir, qid, proxy_model)
+            if proxy_model is not None
+            else None
+        )
 
         oracle_est = None
         if needs_oracle and oracle is not None:
@@ -522,8 +548,10 @@ def create_execution_plan(
             QueryPlanItem(
                 qid=qid,
                 query_text=q_text,
-                target_file=target_file,
-                existing_ds=existing_ds,
+                oracle_path=oracle_path,
+                proxy_path=proxy_path,
+                existing_oracle_ds=existing_oracle_ds,
+                existing_proxy_ds=existing_proxy_ds,
                 has_label=has_label,
                 has_proxy=has_proxy,
                 needs_oracle=needs_oracle,
@@ -655,6 +683,8 @@ def main() -> int:
         base_docs=base_docs,
         output_dir=output_dir,
         output_format=args.format,
+        oracle_model=args.oracle_model,
+        proxy_model=args.proxy_model,
         oracle=oracle,
         proxy=proxy,
         force=args.force,
@@ -694,10 +724,8 @@ def main() -> int:
             print("Aborted by user.")
             return 0
 
-    # Process each query
-    checkpoints_dir = output_dir / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
-
+    # Process each query: oracle and proxy stages are cached independently per
+    # model, so different oracle/proxy combinations can coexist and reuse work.
     for item in plan.items:
         qid = item.qid
         q_text = item.query_text
@@ -705,34 +733,17 @@ def main() -> int:
         print(f"Processing Query {qid}: \"{q_text}\"")
         print("=" * 50)
 
-        target_file = item.target_file
-        if item.existing_ds is not None and len(item.existing_ds) >= len(base_docs):
-            curr_dataset = item.existing_ds.select(range(len(base_docs)))
-            print(
-                f"Loaded existing query dataset from '{target_file}' with "
-                f"{len(curr_dataset)} items (columns: {curr_dataset.column_names})."
-            )
-        else:
-            if item.existing_ds is not None:
-                print(
-                    f"Existing query dataset '{target_file}' only has "
-                    f"{len(item.existing_ds)} items (requested {len(base_docs)}). "
-                    f"Starting from base documents."
-                )
-            curr_dataset = base_docs
-
-        modified = False
-
         # 1. Oracle labeling
         if item.has_label:
             print(
-                f"Query {qid} already has 'label' column in '{target_file}' "
-                f"({len(curr_dataset)} items). Skipping oracle labeling."
+                f"Query {qid} already has oracle output cached at "
+                f"'{item.oracle_path}'. Skipping oracle labeling."
             )
         elif item.needs_oracle and oracle is not None:
-            cp_oracle = checkpoints_dir / f"q{qid}_oracle.json"
-            curr_dataset = add_oracle_labels(
-                dataset=curr_dataset,
+            oracle_input = Dataset.from_dict({"content": base_docs["content"]})
+            cp_oracle = oracle_checkpoint_path(output_dir, qid, args.oracle_model)
+            oracle_ds = add_oracle_labels(
+                dataset=oracle_input,
                 query=q_text,
                 oracle=oracle,
                 input_col="content",
@@ -740,19 +751,21 @@ def main() -> int:
                 batch_size=args.batch_size,
                 checkpoint_path=cp_oracle,
                 skip_cost_confirm=True,
-            )
-            modified = True
+            ).remove_columns(["content"])
+            save_dataset(oracle_ds, item.oracle_path, format=args.format)
+            print(f"Query {qid} oracle output saved to '{item.oracle_path}'.")
 
         # 2. Proxy scoring
         if item.has_proxy:
             print(
-                f"Query {qid} already has 'proxy_score' column in '{target_file}' "
-                f"({len(curr_dataset)} items). Skipping proxy scoring."
+                f"Query {qid} already has proxy output cached at "
+                f"'{item.proxy_path}'. Skipping proxy scoring."
             )
-        elif item.needs_proxy and proxy is not None:
-            cp_proxy = checkpoints_dir / f"q{qid}_proxy.json"
-            curr_dataset = add_proxy_scores(
-                dataset=curr_dataset,
+        elif item.needs_proxy and proxy is not None and item.proxy_path is not None:
+            proxy_input = Dataset.from_dict({"content": base_docs["content"]})
+            cp_proxy = proxy_checkpoint_path(output_dir, qid, args.proxy_model)
+            proxy_ds = add_proxy_scores(
+                dataset=proxy_input,
                 query=q_text,
                 proxy=proxy,
                 input_col="content",
@@ -760,15 +773,9 @@ def main() -> int:
                 batch_size=args.batch_size,
                 checkpoint_path=cp_proxy,
                 skip_cost_confirm=True,
-            )
-            modified = True
-
-        # Save query file if modified or not yet existing
-        if modified or not target_file.exists():
-            save_dataset(curr_dataset, target_file, format=args.format)
-            print(f"Query {qid} dataset complete: '{target_file}'")
-        else:
-            print(f"Query {qid} dataset already complete: '{target_file}'")
+            ).remove_columns(["content"])
+            save_dataset(proxy_ds, item.proxy_path, format=args.format)
+            print(f"Query {qid} proxy output saved to '{item.proxy_path}'.")
 
     print("\nAll tasks completed successfully.")
     return 0

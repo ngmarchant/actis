@@ -37,6 +37,13 @@ from experiments.data_prep.models import (  # noqa: E402
     LiteLLMProxy,
     load_litellm_config,
 )
+from experiments.model_paths import (  # noqa: E402
+    oracle_checkpoint_path,
+    oracle_output_path,
+    proxy_checkpoint_path,
+    proxy_output_path,
+    slugify_model_name,
+)
 
 __all__ = [
     "SCALEDOC_QUERY_URL",
@@ -63,4 +70,9 @@ __all__ = [
     "add_proxy_scores",
     "get_unprocessed_items",
     "save_dataset",
+    "slugify_model_name",
+    "oracle_output_path",
+    "proxy_output_path",
+    "oracle_checkpoint_path",
+    "proxy_checkpoint_path",
 ]

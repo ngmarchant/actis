@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from experiments.model_paths import slugify_model_name
+
 
 @dataclass
 class Population:
@@ -765,9 +767,15 @@ class TabularDataset(BaseScenario):
     Scenario for file-backed benchmark datasets (CSV, Feather, Arrow, Parquet).
 
     Loads proxy scores and ground-truth oracle labels directly from a file on disk.
+    Optionally, `oracle_path` and/or `proxy_path` may point to separate files
+    (e.g. model-scoped oracle/proxy cache files) that are joined positionally
+    onto `data_path`, so that document content need not be duplicated across
+    oracle/proxy model combinations.
     """
 
     data_path: str | Path = ""
+    oracle_path: str | Path = ""
+    proxy_path: str | Path = ""
     score_col: str = "proxy_score"
     label_col: str = "label"
     oracle_cost_col: str = "oracle_cost"
@@ -776,16 +784,50 @@ class TabularDataset(BaseScenario):
     def __post_init__(self):
         if self.data_path != "":
             self.data_path = Path(self.data_path)
+        if self.oracle_path != "":
+            self.oracle_path = Path(self.oracle_path)
+        if self.proxy_path != "":
+            self.proxy_path = Path(self.proxy_path)
         object.__setattr__(self, "_df", None)
         object.__setattr__(self, "_data", None)
+
+    @staticmethod
+    def _read_required(path: Path, label: str) -> pd.DataFrame:
+        if not path.exists():
+            raise FileNotFoundError(f"{label} not found at '{path}'.")
+        return _read_dataframe(path)
+
+    @staticmethod
+    def _align_and_concat(
+        df: pd.DataFrame, other: pd.DataFrame, source_name: str
+    ) -> pd.DataFrame:
+        if len(other) != len(df):
+            raise ValueError(
+                f"Row count mismatch: '{source_name}' has {len(other)} rows, "
+                f"but the base dataset has {len(df)} rows. Files must be "
+                f"row-aligned with the base document dataset."
+            )
+        overlap = set(df.columns) & set(other.columns)
+        if overlap:
+            raise ValueError(
+                f"Column name collision between base dataset and '{source_name}': "
+                f"{sorted(overlap)}"
+            )
+        return pd.concat(
+            [df.reset_index(drop=True), other.reset_index(drop=True)], axis=1
+        )
 
     def get_dataframe(self) -> pd.DataFrame:
         """Loads and returns the cached underlying DataFrame."""
         if getattr(self, "_df", None) is None:
-            data_path = Path(self.data_path)
-            if not data_path.exists():
-                raise FileNotFoundError(f"Dataset not found at '{data_path}'.")
-            object.__setattr__(self, "_df", _read_dataframe(data_path))
+            df = self._read_required(Path(self.data_path), "Dataset")
+            if self.oracle_path != "":
+                oracle_df = self._read_required(Path(self.oracle_path), "Oracle data")
+                df = self._align_and_concat(df, oracle_df, str(self.oracle_path))
+            if self.proxy_path != "":
+                proxy_df = self._read_required(Path(self.proxy_path), "Proxy data")
+                df = self._align_and_concat(df, proxy_df, str(self.proxy_path))
+            object.__setattr__(self, "_df", df)
         return getattr(self, "_df")
 
     def _extract_costs(
@@ -988,14 +1030,18 @@ class ScaleDocDataset(TabularDataset):
     """
     Scenario for ScaleDoc benchmark datasets (PubMed, BigPatent, GovReport).
 
-    Loads proxy scores and ground-truth oracle labels for a specific query
-    from a file on disk
-    (default: experiments/data/scaledoc/{dataset}/q{query_id}.parquet).
+    Loads document content from `documents.parquet`, and joins ground-truth
+    oracle labels and proxy scores from model-scoped cache files (default:
+    experiments/data/scaledoc/{dataset}/documents.parquet,
+    .../oracle/q{query_id}/{oracle_model_slug}.parquet, and
+    .../proxy/q{query_id}/{proxy_model_slug}.parquet).
     """
 
     dataset_name: str = ""
     query_id: str = "0"
     data_dir: str | Path = "experiments/data/scaledoc"
+    oracle_model: str = "azure/gpt-5.6-terra"
+    proxy_model: str = "azure/gpt-5.6-luna"
 
     def __post_init__(self):
         clean_name = self.dataset_name.lower().replace("-", "_")
@@ -1004,8 +1050,23 @@ class ScaleDocDataset(TabularDataset):
             self.name = f"scaledoc_{clean_name}_q{clean_qid}"
         if not self.description:
             self.description = f"ScaleDoc {clean_name} query {clean_qid}"
+        dataset_dir = Path(self.data_dir) / clean_name
         if not self.data_path:
-            self.data_path = Path(self.data_dir) / clean_name / f"q{clean_qid}.parquet"
+            self.data_path = dataset_dir / "documents.parquet"
+        if not self.oracle_path:
+            self.oracle_path = (
+                dataset_dir
+                / "oracle"
+                / f"q{clean_qid}"
+                / f"{slugify_model_name(self.oracle_model)}.parquet"
+            )
+        if not self.proxy_path:
+            self.proxy_path = (
+                dataset_dir
+                / "proxy"
+                / f"q{clean_qid}"
+                / f"{slugify_model_name(self.proxy_model)}.parquet"
+            )
         super().__post_init__()
 
 

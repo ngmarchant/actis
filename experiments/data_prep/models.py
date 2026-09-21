@@ -25,6 +25,7 @@ from litellm.types.llms.openai import (
     ChatCompletionSystemMessage,
     ChatCompletionUserMessage,
 )
+from litellm.utils import trim_messages
 from scipy.special import expit, logsumexp
 
 # Automatically drop parameters unsupported by specific models/providers
@@ -333,6 +334,7 @@ class BaseLiteLLMModel:
         config: ConfigType = None,
         positive_label: str = "Yes",
         negative_label: str = "No",
+        trim_to_max_input_tokens: bool = True,
     ):
         self.model = model
         self.system_prompt = system_prompt
@@ -343,6 +345,7 @@ class BaseLiteLLMModel:
         self.litellm_kwargs = dict(litellm_kwargs or {})
         self.positive_label = positive_label
         self.negative_label = negative_label
+        self.trim_to_max_input_tokens = trim_to_max_input_tokens
 
         self.router: litellm.Router | None = None
         if config is not None:
@@ -374,6 +377,20 @@ class BaseLiteLLMModel:
             negative_label=self.negative_label,
         )
 
+    def _trim_to_max_input_tokens(
+        self, messages: list[AllMessageValues]
+    ) -> list[AllMessageValues]:
+        """
+        Truncates messages to fit within the model's registered `max_input_tokens`.
+
+        Uses the `max_input_tokens` registered for `self.model` via config.yaml's
+        `model_info` (see `_register_custom_pricing`). No-op if trimming is
+        disabled, or if the model has no registered token limit.
+        """
+        if not self.trim_to_max_input_tokens:
+            return messages
+        return trim_messages(messages, model=self.model, trim_ratio=1.0)
+
     def estimate_cost(self, items: list[Any], query: Any) -> CostEstimate:
         """Estimates total tokens and cost across items."""
         total_items = len(items)
@@ -384,27 +401,33 @@ class BaseLiteLLMModel:
         sample_size = min(total_items, 100)
         sample_items = random.sample(items, sample_size)
         sample_tokens = 0
+        sample_costs = []
 
+        # Custom pricing was already registered globally under self.model in
+        # load_litellm_config via _register_custom_pricing. Cost each sampled item
+        # individually (rather than pricing the average token count once) so that
+        # any tiered "above_Nk_tokens" pricing is applied per-request, matching how
+        # actual API calls are billed, then average across the sample.
         for item in sample_items:
             messages = self.format_messages(item, query)
-            sample_tokens += litellm.token_counter(model=self.model, messages=messages)
+            messages = self._trim_to_max_input_tokens(messages)
+            n_tokens = litellm.token_counter(model=self.model, messages=messages)
+            sample_tokens += n_tokens
+            try:
+                prompt_cost, completion_cost = litellm.cost_per_token(
+                    model=self.model,
+                    prompt_tokens=n_tokens,
+                    completion_tokens=1,
+                )
+                sample_costs.append(prompt_cost + completion_cost)
+            except Exception:
+                sample_costs.append(0.0)
 
         avg_prompt_tokens = sample_tokens / sample_size
         est_total_prompt_tokens = int(avg_prompt_tokens * total_items)
         est_total_completion_tokens = total_items * 1
         est_total_tokens = est_total_prompt_tokens + est_total_completion_tokens
-
-        # Custom pricing was already registered globally under self.model in
-        # load_litellm_config via _register_custom_pricing.
-        try:
-            prompt_cost, completion_cost = litellm.cost_per_token(
-                model=self.model,
-                prompt_tokens=est_total_prompt_tokens,
-                completion_tokens=est_total_completion_tokens,
-            )
-            estimated_cost = prompt_cost + completion_cost
-        except Exception:
-            estimated_cost = 0.0
+        estimated_cost = (sum(sample_costs) / sample_size) * total_items
 
         return CostEstimate(
             total_items=total_items,
@@ -424,6 +447,7 @@ class BaseLiteLLMModel:
     ) -> Any:
         """Calls litellm.acompletion or router.acompletion with retries and backoff."""
         messages = self.format_messages(item, query)
+        messages = self._trim_to_max_input_tokens(messages)
         kwargs = {
             **self.litellm_kwargs,
             **extra_kwargs,
@@ -570,6 +594,7 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
         config: ConfigType = None,
         positive_label: str = "Yes",
         negative_label: str = "No",
+        trim_to_max_input_tokens: bool = True,
     ):
         super().__init__(
             model=model,
@@ -582,6 +607,7 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
             config=config,
             positive_label=positive_label,
             negative_label=negative_label,
+            trim_to_max_input_tokens=trim_to_max_input_tokens,
         )
 
     async def _call_single(
@@ -657,6 +683,7 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
         config: ConfigType = None,
         positive_label: str = "Yes",
         negative_label: str = "No",
+        trim_to_max_input_tokens: bool = True,
     ):
         super().__init__(
             model=model,
@@ -669,6 +696,7 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
             config=config,
             positive_label=positive_label,
             negative_label=negative_label,
+            trim_to_max_input_tokens=trim_to_max_input_tokens,
         )
 
     async def _call_single(
