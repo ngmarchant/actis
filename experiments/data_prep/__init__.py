@@ -15,6 +15,7 @@ from experiments.data_prep.labeling import (  # noqa: E402
     save_dataset,
 )
 from experiments.data_prep.loaders import (  # noqa: E402
+    DATASET_GROUPS,
     SCALEDOC_QUERY_URL,
     load_bigpatent_documents,
     load_court_documents,
@@ -27,6 +28,15 @@ from experiments.data_prep.loaders import (  # noqa: E402
     parse_pubmed_text,
 )
 from experiments.data_prep.models import (  # noqa: E402
+    BENCHMARK_PROMPT_DEFAULTS,
+    DEFAULT_BARGAIN_NEGATIVE_LABEL,
+    DEFAULT_BARGAIN_POSITIVE_LABEL,
+    DEFAULT_BARGAIN_SYSTEM_PROMPT,
+    DEFAULT_BARGAIN_USER_TEMPLATE,
+    DEFAULT_SCALEDOC_NEGATIVE_LABEL,
+    DEFAULT_SCALEDOC_POSITIVE_LABEL,
+    DEFAULT_SCALEDOC_SYSTEM_PROMPT,
+    DEFAULT_SCALEDOC_USER_TEMPLATE,
     BaseLiteLLMModel,
     BaseOracle,
     BaseProxy,
@@ -35,6 +45,7 @@ from experiments.data_prep.models import (  # noqa: E402
     CostEstimate,
     LiteLLMOracle,
     LiteLLMProxy,
+    get_benchmark_prompt_defaults,
     load_litellm_config,
 )
 from experiments.model_paths import (  # noqa: E402
@@ -46,6 +57,17 @@ from experiments.model_paths import (  # noqa: E402
 )
 
 __all__ = [
+    "DATASET_GROUPS",
+    "BENCHMARK_PROMPT_DEFAULTS",
+    "DEFAULT_SCALEDOC_SYSTEM_PROMPT",
+    "DEFAULT_SCALEDOC_USER_TEMPLATE",
+    "DEFAULT_SCALEDOC_POSITIVE_LABEL",
+    "DEFAULT_SCALEDOC_NEGATIVE_LABEL",
+    "DEFAULT_BARGAIN_SYSTEM_PROMPT",
+    "DEFAULT_BARGAIN_USER_TEMPLATE",
+    "DEFAULT_BARGAIN_POSITIVE_LABEL",
+    "DEFAULT_BARGAIN_NEGATIVE_LABEL",
+    "get_benchmark_prompt_defaults",
     "SCALEDOC_QUERY_URL",
     "BaseLiteLLMModel",
     "BaseOracle",

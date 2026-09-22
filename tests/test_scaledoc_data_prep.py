@@ -19,11 +19,16 @@ from experiments.data_prep.labeling import (
 from experiments.data_prep.loaders import (
     load_bigpatent_documents,
     load_govreport_documents,
-    load_scaledoc_queries,
+    load_queries,
     parse_pubmed_text,
 )
 from experiments.data_prep.models import (
+    DEFAULT_BARGAIN_NEGATIVE_LABEL,
+    DEFAULT_BARGAIN_POSITIVE_LABEL,
+    DEFAULT_BARGAIN_SYSTEM_PROMPT,
+    DEFAULT_BARGAIN_USER_TEMPLATE,
     DEFAULT_SCALEDOC_SYSTEM_PROMPT,
+    DEFAULT_SCALEDOC_USER_TEMPLATE,
     BaseOracle,
     BaseProxy,
     CallableOracle,
@@ -34,6 +39,7 @@ from experiments.data_prep.models import (
     OracleOutput,
     _default_prompt_formatter,
     _extract_litellm_binary_probability,
+    get_benchmark_prompt_defaults,
     load_litellm_config,
 )
 from experiments.scenarios import (
@@ -916,6 +922,146 @@ def test_system_prompt_label_slots():
     messages_bargain_content = messages_bargain[0]["content"]
     assert messages_bargain_content is not None
     assert "Just output the 'True' or 'False' only." in messages_bargain_content
+
+
+def test_benchmark_prompt_defaults():
+    # ScaleDoc dataset defaults
+    sd_defaults = get_benchmark_prompt_defaults("pubmed")
+    assert sd_defaults["system_prompt"] == DEFAULT_SCALEDOC_SYSTEM_PROMPT
+    assert sd_defaults["user_prompt_template"] == DEFAULT_SCALEDOC_USER_TEMPLATE
+    assert sd_defaults["positive_label"] == "Yes"
+    assert sd_defaults["negative_label"] == "No"
+
+    # BARGAIN dataset defaults
+    bg_defaults = get_benchmark_prompt_defaults("court")
+    assert bg_defaults["system_prompt"] == DEFAULT_BARGAIN_SYSTEM_PROMPT
+    assert bg_defaults["user_prompt_template"] == DEFAULT_BARGAIN_USER_TEMPLATE
+    assert bg_defaults["positive_label"] == "True"
+    assert bg_defaults["negative_label"] == "False"
+
+    # Group name lookups
+    assert get_benchmark_prompt_defaults("scaledoc")["positive_label"] == "Yes"
+    assert get_benchmark_prompt_defaults("bargain")["positive_label"] == "True"
+
+    # Fallback for unknown
+    assert get_benchmark_prompt_defaults("unknown_dataset")["positive_label"] == "Yes"
+
+
+def test_bargain_prompt_formatting():
+    # BARGAIN query with {doc}, {positive_label}, and {negative_label}
+    court_query = (
+        "I will give you a Supreme Court opinion.\n\n"
+        "Your task is to determine if this opinion reverses a lower court's ruling.\n\n"
+        "- {positive_label} if the Supreme Court reverses\n"
+        "- {negative_label} otherwise\n\n"
+        "Here is the opinion: {doc}\n\n"
+        "You must respond with ONLY {positive_label} or {negative_label}:"
+    )
+
+    messages = _default_prompt_formatter(
+        item="US Supreme Court Opinion #456: We reverse the appellate judgment.",
+        query=court_query,
+        sys_prompt=DEFAULT_BARGAIN_SYSTEM_PROMPT,
+        user_tmpl=DEFAULT_BARGAIN_USER_TEMPLATE,
+        positive_label=DEFAULT_BARGAIN_POSITIVE_LABEL,
+        negative_label=DEFAULT_BARGAIN_NEGATIVE_LABEL,
+    )
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert (
+        messages[0]["content"]
+        == "You are a helpful assistant that is good at processing data."
+    )
+
+    assert messages[1]["role"] == "user"
+    user_content = messages[1]["content"]
+    assert isinstance(user_content, str)
+    assert "- True if the Supreme Court reverses" in user_content
+    assert "- False otherwise" in user_content
+    assert (
+        "Here is the opinion: US Supreme Court Opinion #456: "
+        "We reverse the appellate judgment." in user_content
+    )
+    assert "You must respond with ONLY True or False:" in user_content
+    assert "{doc}" not in user_content
+    assert "{positive_label}" not in user_content
+    assert "{negative_label}" not in user_content
+
+
+def test_legacy_text_placeholder_in_query():
+    query_with_text = (
+        "Task description.\nHere is text: {text}\n"
+        "Respond {positive_label}/{negative_label}:"
+    )
+    messages = _default_prompt_formatter(
+        item="Document body",
+        query=query_with_text,
+        sys_prompt=DEFAULT_BARGAIN_SYSTEM_PROMPT,
+        user_tmpl="{query}",
+        positive_label="True",
+        negative_label="False",
+    )
+    content = messages[1]["content"]
+    assert isinstance(content, str)
+    assert "Here is text: Document body" in content
+    assert "Respond True/False:" in content
+
+
+def test_bargain_query_json_loading_and_formatting():
+    query_file = "experiments/data/bargain/query.json"
+    for ds_name in ["court", "screenplay", "wiki", "review"]:
+        queries = load_queries(ds_name, query_file)
+        assert len(queries) > 0
+        q0 = queries[0]["query"]
+        assert "{doc}" in q0
+        assert "{positive_label}" in q0
+        assert "{negative_label}" in q0
+        assert "{text}" not in q0
+
+        # Verify formatting resolves all slots
+        messages = _default_prompt_formatter(
+            item="Sample content for testing.",
+            query=q0,
+            sys_prompt=DEFAULT_BARGAIN_SYSTEM_PROMPT,
+            user_tmpl=DEFAULT_BARGAIN_USER_TEMPLATE,
+            positive_label="True",
+            negative_label="False",
+        )
+        user_text = messages[1]["content"]
+        assert isinstance(user_text, str)
+        assert "Sample content for testing." in user_text
+        assert "{doc}" not in user_text
+        assert "{positive_label}" not in user_text
+        assert "{negative_label}" not in user_text
+        assert "True" in user_text
+        assert "False" in user_text
+
+
+def test_models_with_benchmark_prompt_defaults():
+    # Test LiteLLMOracle with BARGAIN defaults
+    bg_defaults = get_benchmark_prompt_defaults("bargain")
+    oracle = LiteLLMOracle(
+        model="azure/gpt-5.6-terra",
+        system_prompt=bg_defaults["system_prompt"],
+        user_prompt_template=bg_defaults["user_prompt_template"],
+        positive_label=bg_defaults["positive_label"],
+        negative_label=bg_defaults["negative_label"],
+    )
+    assert oracle.positive_label == "True"
+    assert oracle.negative_label == "False"
+    assert (
+        oracle.system_prompt
+        == "You are a helpful assistant that is good at processing data."
+    )
+
+    query_text = "Review opinion: {doc}. Return {positive_label} or {negative_label}."
+    messages = oracle.format_messages(item="Doc 1", query=query_text)
+    assert (
+        messages[0]["content"]
+        == "You are a helpful assistant that is good at processing data."
+    )
+    assert messages[1]["content"] == "Review opinion: Doc 1. Return True or False."
 
 
 def test_add_oracle_labels_with_oracle_score():

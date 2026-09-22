@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import math
 import random
+import string
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -213,6 +214,57 @@ DEFAULT_SCALEDOC_SYSTEM_PROMPT = (
     "provided document. Just output the '{positive_label}' or '{negative_label}' only."
 )
 DEFAULT_SCALEDOC_USER_TEMPLATE = "## Document:\n{doc}\n## Question:\n{query}."
+DEFAULT_SCALEDOC_POSITIVE_LABEL = "Yes"
+DEFAULT_SCALEDOC_NEGATIVE_LABEL = "No"
+
+DEFAULT_BARGAIN_SYSTEM_PROMPT = (
+    "You are a helpful assistant that is good at processing data."
+)
+DEFAULT_BARGAIN_USER_TEMPLATE = "{query}"
+DEFAULT_BARGAIN_POSITIVE_LABEL = "True"
+DEFAULT_BARGAIN_NEGATIVE_LABEL = "False"
+
+BENCHMARK_PROMPT_DEFAULTS: dict[str, dict[str, str]] = {
+    "scaledoc": {
+        "system_prompt": DEFAULT_SCALEDOC_SYSTEM_PROMPT,
+        "user_prompt_template": DEFAULT_SCALEDOC_USER_TEMPLATE,
+        "positive_label": DEFAULT_SCALEDOC_POSITIVE_LABEL,
+        "negative_label": DEFAULT_SCALEDOC_NEGATIVE_LABEL,
+    },
+    "bargain": {
+        "system_prompt": DEFAULT_BARGAIN_SYSTEM_PROMPT,
+        "user_prompt_template": DEFAULT_BARGAIN_USER_TEMPLATE,
+        "positive_label": DEFAULT_BARGAIN_POSITIVE_LABEL,
+        "negative_label": DEFAULT_BARGAIN_NEGATIVE_LABEL,
+    },
+}
+
+
+def get_benchmark_prompt_defaults(dataset_or_group: str) -> dict[str, str]:
+    """
+    Returns default prompt templates and labels for a benchmark group or dataset.
+    """
+    from experiments.data_prep.loaders import DATASET_GROUPS
+
+    key = str(dataset_or_group).lower().replace("-", "_")
+    group = DATASET_GROUPS.get(key, key)
+    if group not in BENCHMARK_PROMPT_DEFAULTS:
+        group = "scaledoc"
+    return BENCHMARK_PROMPT_DEFAULTS[group].copy()
+
+
+class _SafeDict(dict):
+    """
+    Dictionary that leaves missing format keys untouched instead of raising KeyError.
+    """
+
+    def __missing__(self, key: str) -> str:
+        return f"{{{key}}}"
+
+
+def _safe_format(template: str, kwargs: dict[str, Any]) -> str:
+    """Formats template with kwargs, leaving any undefined placeholders intact."""
+    return string.Formatter().vformat(template, (), _SafeDict(**kwargs))
 
 
 def _default_prompt_formatter(
@@ -224,28 +276,32 @@ def _default_prompt_formatter(
     negative_label: str = "No",
 ) -> list[AllMessageValues]:
     doc_str = str(item)
-    user_str = (
-        user_tmpl.format(
-            doc=doc_str,
-            query=str(query),
-            positive_label=positive_label,
-            negative_label=negative_label,
-        )
-        if ("{positive_label}" in user_tmpl or "{negative_label}" in user_tmpl)
-        else user_tmpl.format(doc=doc_str, query=str(query))
-    )
-    sys_str = (
-        sys_prompt.format(
-            positive_label=positive_label,
-            negative_label=negative_label,
-        )
-        if ("{positive_label}" in sys_prompt or "{negative_label}" in sys_prompt)
-        else sys_prompt
-    )
-    return [
-        ChatCompletionSystemMessage(role="system", content=sys_str),
-        ChatCompletionUserMessage(role="user", content=user_str),
-    ]
+    query_str = str(query)
+
+    format_kwargs: dict[str, Any] = {
+        "doc": doc_str,
+        "text": doc_str,
+        "positive_label": positive_label,
+        "negative_label": negative_label,
+    }
+
+    # If the query itself contains placeholders (e.g. BARGAIN queries having
+    # {doc} or {text}, {positive_label}, {negative_label}), format the query first.
+    slots = ("{doc}", "{text}", "{positive_label}", "{negative_label}")
+    if any(k in query_str for k in slots):
+        query_str = _safe_format(query_str, format_kwargs)
+
+    format_kwargs["query"] = query_str
+    user_str = _safe_format(user_tmpl, format_kwargs)
+
+    messages: list[AllMessageValues] = []
+    if sys_prompt:
+        sys_str = _safe_format(sys_prompt, format_kwargs)
+        if sys_str:
+            messages.append(ChatCompletionSystemMessage(role="system", content=sys_str))
+
+    messages.append(ChatCompletionUserMessage(role="user", content=user_str))
+    return messages
 
 
 def _register_custom_pricing(model_list: list[dict[str, Any]]) -> None:

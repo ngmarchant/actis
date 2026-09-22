@@ -27,6 +27,7 @@ from dataclasses import dataclass  # noqa: E402
 from datasets import Dataset  # noqa: E402
 
 from experiments.data_prep import (  # noqa: E402
+    DATASET_GROUPS,
     BaseOracle,
     BaseProxy,
     CostEstimate,
@@ -34,6 +35,7 @@ from experiments.data_prep import (  # noqa: E402
     LiteLLMProxy,
     add_oracle_labels,
     add_proxy_scores,
+    get_benchmark_prompt_defaults,
     get_unprocessed_items,
     load_bigpatent_documents,
     load_court_documents,
@@ -50,15 +52,6 @@ from experiments.data_prep import (  # noqa: E402
     save_dataset,
 )
 
-DATASET_GROUPS = {
-    "pubmed": "scaledoc",
-    "big_patent": "scaledoc",
-    "gov_report": "scaledoc",
-    "court": "bargain",
-    "screenplay": "bargain",
-    "wiki": "bargain",
-    "review": "bargain",
-}
 QUERY_FILES = {
     "scaledoc": _ROOT / "experiments" / "data" / "scaledoc" / "query.json",
     "bargain": _ROOT / "experiments" / "data" / "bargain" / "query.json",
@@ -193,6 +186,34 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="Force re-generation of existing label or proxy_score columns",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Custom system prompt (defaults to benchmark-specific default)",
+    )
+    parser.add_argument(
+        "--user-template",
+        type=str,
+        default=None,
+        help="Custom user prompt template (defaults to benchmark-specific default)",
+    )
+    parser.add_argument(
+        "--positive-label",
+        type=str,
+        default=None,
+        help=(
+            "Positive label string (defaults to 'Yes' for ScaleDoc, 'True' for BARGAIN)"
+        ),
+    )
+    parser.add_argument(
+        "--negative-label",
+        type=str,
+        default=None,
+        help=(
+            "Negative label string (defaults to 'No' for ScaleDoc, 'False' for BARGAIN)"
+        ),
     )
     return parser.parse_args()
 
@@ -656,12 +677,39 @@ def main() -> int:
         config_path = "config.yaml"
         print("Auto-detected and loaded 'config.yaml' from current directory.")
 
+    # Resolve prompt templates and labels
+    prompt_defaults = get_benchmark_prompt_defaults(args.dataset)
+    sys_prompt = (
+        args.system_prompt
+        if args.system_prompt is not None
+        else prompt_defaults["system_prompt"]
+    )
+    user_tmpl = (
+        args.user_template
+        if args.user_template is not None
+        else prompt_defaults["user_prompt_template"]
+    )
+    pos_label = (
+        args.positive_label
+        if args.positive_label is not None
+        else prompt_defaults["positive_label"]
+    )
+    neg_label = (
+        args.negative_label
+        if args.negative_label is not None
+        else prompt_defaults["negative_label"]
+    )
+
     # Initialize models
     litellm_kwargs = {"temperature": args.temperature}
     oracle = None
     if not args.skip_oracle:
         oracle = LiteLLMOracle(
             model=args.oracle_model,
+            system_prompt=sys_prompt,
+            user_prompt_template=user_tmpl,
+            positive_label=pos_label,
+            negative_label=neg_label,
             max_concurrency=args.concurrency,
             litellm_kwargs=litellm_kwargs,
             config=config_path,
@@ -671,6 +719,10 @@ def main() -> int:
     if not args.skip_proxy and args.proxy_model:
         proxy = LiteLLMProxy(
             model=args.proxy_model,
+            system_prompt=sys_prompt,
+            user_prompt_template=user_tmpl,
+            positive_label=pos_label,
+            negative_label=neg_label,
             max_concurrency=args.concurrency,
             litellm_kwargs=litellm_kwargs,
             config=config_path,

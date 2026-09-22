@@ -32,6 +32,15 @@ BARGAIN_DATASET_HANDLES = {
     "screenplay": "gufukuro/movie-scripts-corpus",
     "review": "najzeko/steam-reviews-2021",
 }
+DATASET_GROUPS = {
+    "pubmed": "scaledoc",
+    "big_patent": "scaledoc",
+    "gov_report": "scaledoc",
+    "court": "bargain",
+    "screenplay": "bargain",
+    "wiki": "bargain",
+    "review": "bargain",
+}
 
 
 def parse_pubmed_text(text_or_path: str | Path, n: int = 10000) -> list[str]:

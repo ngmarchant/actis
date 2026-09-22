@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from experiments.model_paths import slugify_model_name
+from experiments.data_prep import DATASET_GROUPS
 
 
 @dataclass
