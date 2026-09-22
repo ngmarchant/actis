@@ -195,6 +195,15 @@ def parse_args():
         help="Defensive mixing weight for importance sampling (default: 0.4)",
     )
     parser.add_argument(
+        "--tail-tolerance",
+        type=float,
+        default=0.10,
+        help=(
+            "Dimensionless tail uncertainty tolerance for prevalence-adaptive clipping "
+            "of importance sampling proposals (default: 0.10)"
+        ),
+    )
+    parser.add_argument(
         "--proposal-method",
         type=str,
         choices=["snr_balanced", "var_min"],
@@ -373,6 +382,7 @@ def main():
             min_positives=args.min_positives,
             enable_asymptotic_protection=args.enable_asymptotic_protection,
             variance_ratio_bound=args.variance_ratio_bound,
+            tail_tolerance=args.tail_tolerance,
         ),
         ACTISRunner(
             name="actis_adaptive_asymptotic",

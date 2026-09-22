@@ -201,12 +201,16 @@ class ACTISRunner(BaseFilterRunner):
     sampling_method: Literal["wor", "is"] = "is"
     """Method to use when sampling dataset items to label."""
 
-    alpha: float | None = 0.4
+    alpha: float | None = 0.0
     """Defensive mixing weight for importance sampling proposal distribution. If None
     or 0.0, no defensive mixing is applied."""
 
     proposal_method: ProposalMethod = "snr_balanced"
     """Method to use when computing the importance sampling proposal distribution."""
+
+    tail_tolerance: float = 0.10
+    """Dimensionless tail uncertainty tolerance for prevalence-adaptive clipping of
+    importance sampling proposal distribution."""
 
     power_law_quantiles: bool = True
     """Whether to use power-law quantiles for the upper threshold grid when
@@ -317,6 +321,7 @@ class ACTISRunner(BaseFilterRunner):
                 thresholds_upper=thresholds_upper,
                 alpha=self.alpha,
                 method=self.proposal_method,
+                tail_tolerance=self.tail_tolerance,
             )
 
             weights = 1.0 / (q * pop_size)
