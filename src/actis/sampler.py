@@ -6,14 +6,13 @@ from numpy.typing import ArrayLike
 
 @dataclass(kw_only=True)
 class PopulationSampler:
-
     def __init__(
-            self,
-            pop_size: int,
-            replace: bool = True,
-            p: ArrayLike | None = None,
-            rng: np.random.Generator | None = None
-        ):
+        self,
+        pop_size: int,
+        replace: bool = True,
+        p: ArrayLike | None = None,
+        rng: np.random.Generator | None = None,
+    ):
         """
         Args:
             pop_size: Size of the population dataset.
@@ -64,7 +63,7 @@ class PopulationSampler:
                 self._perm_idx = self.rng.permutation(self.pop_size)
             i = self._sample_count
             self._sample_count += size
-            return self._perm_idx[i:i+size].tolist()
+            return self._perm_idx[i : i + size].tolist()
 
         self._sample_count += size
         if self._cdf is None:

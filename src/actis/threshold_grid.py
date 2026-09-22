@@ -19,10 +19,11 @@ def validate_thresholds(
         )
     return arr
 
+
 def quantile_power_law_grid(
     scores: ArrayLike,
     num_thresholds: int = 500,
-    gamma: float | Literal["auto"] = "auto"
+    gamma: float | Literal["auto"] = "auto",
 ) -> NDArray[np.float64]:
     r"""Generates quantile thresholds following a power-law schedule.
 
@@ -55,4 +56,3 @@ def quantile_power_law_grid(
 
     p = 1.0 - (1.0 - np.linspace(0.0, 1.0, M)) ** gamma
     return np.unique(np.quantile(scores, p))
-

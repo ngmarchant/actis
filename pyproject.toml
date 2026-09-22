@@ -58,6 +58,8 @@ override-dependencies = [
 
 [tool.ruff]
 line-length = 88
+extend-exclude = ["externals"]
+
 
 [tool.ruff.lint]
 # Active linting rules (Errors, Flake8, Isort imports, Warnings)

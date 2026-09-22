@@ -1,4 +1,5 @@
-"""Unit tests for multi-metric costing, Population dataclass, and cascade evaluation logic.
+"""Unit tests for multi-metric costing, Population dataclass,
+and cascade evaluation logic.
 """
 
 import numpy as np
@@ -36,9 +37,9 @@ def test_population_dataclass_basics():
 
     assert len(pop) == 3
     # Test unpacking
-    s, l = pop
+    s, lbl = pop
     np.testing.assert_array_equal(s, scores)
-    np.testing.assert_array_equal(l, labels)
+    np.testing.assert_array_equal(lbl, labels)
 
     # Test slicing
     sub_pop = pop.slice(np.array([0, 2]))
@@ -128,7 +129,8 @@ def test_evaluate_cascade_trial_calibration_override():
 
     # Expected predictions:
     # Item 0 (calibrated, reject region): oracle label -> True
-    # Item 1 (uncalibrated, uncertain region [0.3, 0.7]): oracle sent -> True routing, label is False
+    # Item 1 (uncalibrated, uncertain region [0.3, 0.7]): oracle sent -> True routing,
+    # label is False
     # Item 2 (calibrated, accept region): oracle label -> False
     # Item 3 (uncalibrated, accept region): cascade prediction -> True
     # Preds should be [True, False, False, True]
@@ -138,7 +140,7 @@ def test_evaluate_cascade_trial_calibration_override():
     assert res.recall == 1.0
     assert res.precision == 1.0
 
-    # Oracle queried items: 0 (calib), 1 (uncertain), 2 (calib) -> total 3 calls out of 4
+    # Oracle queried items: 0 (calib), 1 (uncertain), 2 (calib) -> total 3 of 4
     assert res.cost["oracle"]["num_calls"] == 3.0
     assert res.cost["oracle"]["call_rate"] == 0.75
     assert res.cost["proxy"]["num_calls"] == 4.0
@@ -146,7 +148,9 @@ def test_evaluate_cascade_trial_calibration_override():
 
 
 def test_bargain_pr_queried_indices_override():
-    """Verify BargainPRRunner overrides predictions for all queried indices with oracle labels."""
+    """Verify BargainPRRunner overrides predictions for all queried indices
+    with oracle labels.
+    """
     rng = np.random.default_rng(42)
     scores = np.array([0.1, 0.2, 0.8, 0.9, 0.95])
     labels = np.array([False, False, True, True, True])
@@ -239,8 +243,12 @@ def test_summarize_runner_trials_hierarchical_cost_and_include_raw():
     assert "raw" in summary_with_raw["recall"]
     assert "raw" in summary_with_raw["runtime"]
     assert "raw" in summary_with_raw["cost"]["oracle"]["call_rate"]
-    assert summary_with_raw["cost"]["oracle"]["call_rate"]["mean"] == pytest.approx(0.25)
-    assert summary_with_raw["cost"]["oracle"]["monetary"]["mean"] == pytest.approx(0.625)
+    assert summary_with_raw["cost"]["oracle"]["call_rate"]["mean"] == pytest.approx(
+        0.25
+    )
+    assert summary_with_raw["cost"]["oracle"]["monetary"]["mean"] == pytest.approx(
+        0.625
+    )
     assert summary_with_raw["cost"]["proxy"]["call_rate"]["mean"] == pytest.approx(1.0)
     # Check that legacy keys are absent
     assert "mean_total_oracle_calls" not in summary_with_raw

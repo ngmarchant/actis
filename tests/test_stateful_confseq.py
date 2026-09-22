@@ -1,20 +1,20 @@
 import numpy as np
 import pytest
-from confseq.betting import diversified_betting_mart
-from confseq.betting_strategies import lambda_predmix_eb
+
+try:
+    from confseq.betting import diversified_betting_mart
+    from confseq.betting_strategies import lambda_predmix_eb
+except (ImportError, AttributeError) as e:
+    pytest.skip(
+        f"confseq reference tests unavailable: {e}", allow_module_level=True
+    )
 
 from actis.confseq import BettingSupermartingale, GaussianMixtureSupermartingale
 from actis.tuner import ACTIS
 
 
 def _eval_confseq_reference(
-    x,
-    m,
-    alpha,
-    pop_size=None,
-    horizon=None,
-    trunc_scale=0.5,
-    m_trunc=True
+    x, m, alpha, pop_size=None, horizon=None, trunc_scale=0.5, m_trunc=True
 ) -> float:
     lambdas_fns = [
         lambda data, mean: lambda_predmix_eb(data, alpha=alpha, fixed_n=horizon)
@@ -34,7 +34,6 @@ def _eval_confseq_reference(
 
 
 class TestGaussianMixtureSupermartingale:
-
     @pytest.mark.parametrize("m", [0.0, 0.2, -0.1])
     @pytest.mark.parametrize("v_0", [0.01, 0.1, 1.0, 5.0])
     def test_batch_vs_full_parity(self, m, v_0):
@@ -51,7 +50,7 @@ class TestGaussianMixtureSupermartingale:
         chunk_sizes = [50, 100, 150, 200]
         idx = 0
         for sz in chunk_sizes:
-            mart_step.update(x[idx:idx + sz])
+            mart_step.update(x[idx : idx + sz])
             idx += sz
 
         assert np.isclose(w_full, mart_step.wealth(), rtol=1e-12, atol=1e-12)
@@ -63,7 +62,6 @@ class TestGaussianMixtureSupermartingale:
 
 
 class TestBettingSupermartingale:
-
     @pytest.mark.parametrize("pop_size", [None, 1000])
     @pytest.mark.parametrize("horizon", [None, 300])
     @pytest.mark.parametrize("alpha", [0.01, 0.05, 0.1])
@@ -84,7 +82,7 @@ class TestBettingSupermartingale:
         chunk_sizes = [30, 70, 100, 100]
         idx = 0
         for sz in chunk_sizes:
-            mart.update(x[idx:idx + sz])
+            mart.update(x[idx : idx + sz])
             idx += sz
 
         assert np.isclose(mart.wealth(), ref_wealth, rtol=1e-10, atol=1e-10)
@@ -122,7 +120,6 @@ class TestBettingSupermartingale:
 
 
 class TestACTISTunerStateParity:
-
     @pytest.mark.parametrize("conf_seq", ["finite", "asymptotic"])
     def test_streaming_batches_vs_oneshot(self, conf_seq):
         rng = np.random.default_rng(42)
@@ -166,8 +163,8 @@ class TestACTISTunerStateParity:
         for i in range(0, N, batch_size):
             res_stream = tuner_stream.add_samples(
                 indices=np.arange(i, i + batch_size),
-                scores=scores[i:i + batch_size],
-                labels=labels[i:i + batch_size],
+                scores=scores[i : i + batch_size],
+                labels=labels[i : i + batch_size],
             )
         opt_stream = tuner_stream.compute_optimistic_thresholds()
 
@@ -191,18 +188,24 @@ class TestACTISTunerStateParity:
         q = q / q.sum()
         weights = 1.0 / (q * N)
 
-        max_weight_ge = np.array([
-            weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
-            for tau in thresholds
-        ])
-        max_weight_lt = np.array([
-            weights[scores < tau].max() if np.any(scores < tau) else 0.0
-            for tau in thresholds
-        ])
-        max_weight_ge_upper = np.array([
-            weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
-            for tau in thresholds_upper
-        ])
+        max_weight_ge = np.array(
+            [
+                weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
+                for tau in thresholds
+            ]
+        )
+        max_weight_lt = np.array(
+            [
+                weights[scores < tau].max() if np.any(scores < tau) else 0.0
+                for tau in thresholds
+            ]
+        )
+        max_weight_ge_upper = np.array(
+            [
+                weights[scores >= tau].max() if np.any(scores >= tau) else weights.max()
+                for tau in thresholds_upper
+            ]
+        )
 
         # 1. Oneshot
         tuner_oneshot = ACTIS(
@@ -244,9 +247,9 @@ class TestACTISTunerStateParity:
         for i in range(0, N, batch_size):
             res_stream = tuner_stream.add_samples(
                 indices=np.arange(i, i + batch_size),
-                scores=scores[i:i + batch_size],
-                labels=labels[i:i + batch_size],
-                weights=weights[i:i + batch_size],
+                scores=scores[i : i + batch_size],
+                labels=labels[i : i + batch_size],
+                weights=weights[i : i + batch_size],
             )
         opt_stream = tuner_stream.compute_optimistic_thresholds()
 
@@ -293,12 +296,11 @@ class TestACTISTunerStateParity:
         for i in range(0, N, batch_size):
             res_stream = tuner_stream.add_samples(
                 indices=np.arange(i, i + batch_size),
-                scores=scores[i:i + batch_size],
-                labels=labels[i:i + batch_size],
+                scores=scores[i : i + batch_size],
+                labels=labels[i : i + batch_size],
             )
         opt_stream = tuner_stream.compute_optimistic_thresholds()
 
         assert res_oneshot.tau_pos == res_stream.tau_pos
         assert res_oneshot.tau_neg == res_stream.tau_neg
         assert opt_oneshot == opt_stream
-

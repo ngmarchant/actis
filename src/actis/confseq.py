@@ -99,12 +99,7 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
 
     """
 
-    def __init__(
-        self,
-        m: float = 0.0,
-        v_0: float = 1.0,
-        reverse: bool = False
-    ) -> None:
+    def __init__(self, m: float = 0.0, v_0: float = 1.0, reverse: bool = False) -> None:
         r"""
         Args:
             m: Mean $m$ in the null hypothesis.
@@ -136,7 +131,7 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
         """
         if self.t < 2:
             return 0.0
-        return max(0.0, self.running_sum_sq - (self.running_sum ** 2) / self.t)
+        return max(0.0, self.running_sum_sq - (self.running_sum**2) / self.t)
 
     def log_wealth(self) -> float:
         if self.t < 2:
@@ -154,7 +149,7 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
 
         denom = 2.0 * (self.v_0 + v_t)
         denom_log = 0.5 * math.log1p(v_t / self.v_0)
-        return (s_t ** 2) / denom - denom_log
+        return (s_t**2) / denom - denom_log
 
     def wealth(self) -> float:
         log_wealth = self.log_wealth()
@@ -233,7 +228,7 @@ class BettingSupermartingale(TestSupermartingale):
             super().update(x)
             return
         t0: int = self.t
-        super().update(x) # Base class updates self.t and self.running_sum
+        super().update(x)  # Base class updates self.t and self.running_sum
 
         if self.reverse:
             x = 1.0 - x
@@ -246,13 +241,12 @@ class BettingSupermartingale(TestSupermartingale):
 
         # Online running regularized mean and variance
         mu_hat_t = np.minimum(
-            (self.fake_obs * self.prior_mean + S_t) / (t + self.fake_obs),
-            1.0
+            (self.fake_obs * self.prior_mean + S_t) / (t + self.fake_obs), 1.0
         )
         sq_dev = (x - mu_hat_t) ** 2
         cum_sq_dev_t = self.cum_sq_dev + np.cumsum(sq_dev)
-        sigma2_t = (
-            (self.fake_obs * self.prior_variance + cum_sq_dev_t) / (t + self.fake_obs)
+        sigma2_t = (self.fake_obs * self.prior_variance + cum_sq_dev_t) / (
+            t + self.fake_obs
         )
 
         # 1-step predictable variance
@@ -279,9 +273,7 @@ class BettingSupermartingale(TestSupermartingale):
             S_prev[0] = self.S_t
             if B > 1:
                 S_prev[1:] = S_t[:-1]
-            mu_t = (
-                (self.pop_size * null_m - S_prev) / (self.pop_size - (t - 1.0))
-            )
+            mu_t = (self.pop_size * null_m - S_prev) / (self.pop_size - (t - 1.0))
         else:
             mu_t = np.full(B, null_m, dtype=np.float64)
 
@@ -319,4 +311,3 @@ class BettingSupermartingale(TestSupermartingale):
 
     def wealth(self) -> float:
         return self.current_wealth
-

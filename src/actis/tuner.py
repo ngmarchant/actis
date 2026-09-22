@@ -21,6 +21,7 @@ from .threshold_grid import validate_thresholds
 class AsymptoticValidityDiagnostics:
     """Stores diagnostics for assessing whether the asymptotic confidence sequence
     guarantee is reliable."""
+
     v_t: float
     v_0: float
     num_true_positives: int
@@ -72,6 +73,7 @@ class AsymptoticValidityDiagnostics:
 @dataclass
 class CascadeThresholds:
     """Stores calibrated thresholds and associated diagnostics."""
+
     tau_pos: float
     tau_neg: float
     num_samples: int
@@ -91,6 +93,7 @@ class CascadeThresholds:
 @dataclass
 class StoppingDiagnostics:
     """Diagnostics for the stopping decision of the ACTIS tuner."""
+
     n_draws: int
     n_seen: int
     N_rem: int
@@ -234,11 +237,7 @@ class CascadeConfSeqs(ABC):
             self.weights[start_idx:] if self.weights is not None else None,
         )
 
-    def _get_mart_R(
-        self,
-        k: int,
-        reverse: bool = False
-    ) -> TestSupermartingale:
+    def _get_mart_R(self, k: int, reverse: bool = False) -> TestSupermartingale:
         """Returns an up-to-date recall test supermartingale for threshold index k."""
         key = (k, reverse)
         if key not in self._marts_R:
@@ -253,10 +252,7 @@ class CascadeConfSeqs(ABC):
         return mart
 
     def _get_mart_P(
-        self,
-        k_upper: int,
-        k_lower: int,
-        reverse: bool = False
+        self, k_upper: int, k_lower: int, reverse: bool = False
     ) -> TestSupermartingale:
         """Returns an up-to-date precision test supermartingale for threshold pair
         (k_upper, k_lower)."""
@@ -271,11 +267,7 @@ class CascadeConfSeqs(ABC):
                 self._last_k_lower_opt = k_lower
             cache = self._opt_marts_P
         if k_upper not in cache:
-            cache[k_upper] = self._create_mart_P(
-                k_upper,
-                k_lower,
-                reverse=reverse
-            )
+            cache[k_upper] = self._create_mart_P(k_upper, k_lower, reverse=reverse)
         mart = cache[k_upper]
 
         if mart.t < len(self.scores):
@@ -296,11 +288,7 @@ class CascadeConfSeqs(ABC):
         pass
 
     @abstractmethod
-    def _create_mart_R(
-        self,
-        k: int,
-        reverse: bool = False
-    ) -> TestSupermartingale:
+    def _create_mart_R(self, k: int, reverse: bool = False) -> TestSupermartingale:
         pass
 
     @abstractmethod
@@ -364,7 +352,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         horizon: int | None = None,
         max_weight_ge: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_lt: Sequence[float] | NDArray[np.float64] | None = None,
-        max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None
+        max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None,
     ) -> None:
         r"""
         Args:
@@ -444,10 +432,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         else:
             self.max_weight_ge_upper = self.max_weight_ge
 
-    def _get_shift_width_R(
-        self,
-        k: int
-    ) -> tuple[float, float]:
+    def _get_shift_width_R(self, k: int) -> tuple[float, float]:
         max_weight_ge_k = (
             float(self.max_weight_ge[k]) if self.max_weight_ge is not None else 1.0
         )
@@ -465,11 +450,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         width_R = shift_R + (1.0 - self.gamma_R) * max_weight_ge_k
         return shift_R, width_R
 
-    def _get_shift_width_P(
-        self,
-        k_upper: int,
-        k_lower: int
-    ) -> tuple[float, float]:
+    def _get_shift_width_P(self, k_upper: int, k_lower: int) -> tuple[float, float]:
         max_weight_ge_upper_k = (
             float(self.max_weight_ge_upper[k_upper])
             if self.max_weight_ge_upper is not None
@@ -484,11 +465,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         width_P = shift_P + (1.0 - self.gamma_P) * max_weight_ge_lower
         return shift_P, width_P
 
-    def _create_mart_R(
-        self,
-        k: int,
-        reverse: bool = False
-    ) -> TestSupermartingale:
+    def _create_mart_R(self, k: int, reverse: bool = False) -> TestSupermartingale:
         shift_R, width_R = self._get_shift_width_R(k)
         target_mean = (shift_R / width_R) if width_R > 0 else 0.0
         return BettingSupermartingale(
@@ -544,9 +521,7 @@ class FiniteSampleCascadeConfSeqs(CascadeConfSeqs):
         tau_lower = self.thresholds[k_lower]
         is_true_pos = labels & (scores >= tau_lower)
         is_false_pos = (~labels) & (scores >= tau_upper)
-        unscaled_rvs = (
-            (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
-        )
+        unscaled_rvs = (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
         if weights is not None:
             unscaled_rvs *= weights
         shift_P, width_P = self._get_shift_width_P(k_upper, k_lower)
@@ -585,22 +560,16 @@ class PriorAndTargetVar:
             if np.any(self._target_R < 0.0):
                 raise ValueError("All entries of target_R must be non-negative.")
             if np.shape(self._target_R) != np.shape(self._prior_R):
-                raise ValueError(
-                    "target_R must have the same shape as prior_R."
-                )
+                raise ValueError("target_R must have the same shape as prior_R.")
         else:
             self._target_R = self._prior_R
 
         if target_P is not None:
             self._target_P = np.asarray(target_P, dtype=np.float64)
             if np.any(self._target_P < 0.0):
-                raise ValueError(
-                    "All entries of target_P must be non-negative."
-                )
+                raise ValueError("All entries of target_P must be non-negative.")
             if np.shape(self._target_P) != np.shape(self._prior_P):
-                raise ValueError(
-                    "target_P must have the same shape as prior_P."
-                )
+                raise ValueError("target_P must have the same shape as prior_P.")
         else:
             self._target_P = self._prior_P
 
@@ -748,9 +717,7 @@ def compute_prior_and_target_var(
     M_upper = len(thresholds_upper)
 
     if weights is None:
-        prefix_sum_pos = (
-            np.concatenate(([0.0], np.cumsum(scores_sorted))) * max_weight
-        )
+        prefix_sum_pos = np.concatenate(([0.0], np.cumsum(scores_sorted))) * max_weight
         suffix_sum_pos = (
             np.append(np.cumsum(scores_sorted[::-1])[::-1], 0.0) * max_weight
         )
@@ -760,18 +727,20 @@ def compute_prior_and_target_var(
 
         # Boundary null cap for Recall: under H_0 (Recall <= gamma_R),
         # false negative mass cannot exceed (1 - gamma_R)/gamma_R * true positive mass.
-        # This prevents proxy score inaccuracies from inflating expected process variance.
+        # This prevents proxy score inaccuracies from inflating expected process
+        # variance.
         null_fn_cap = ((1.0 - gamma_R) / gamma_R) * pos_mass_ge_lower
         pos_mass_lt_lower = np.minimum(pos_mass_lt_lower, null_fn_cap)
 
         b_R = (1.0 - gamma_R) * max_weight
         v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
-        sigma2_R = (
-            (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R**2) * pos_mass_lt_lower
-        )
+        sigma2_R = (1.0 - gamma_R) ** 2 * pos_mass_ge_lower + (
+            gamma_R**2
+        ) * pos_mass_lt_lower
         v_0_target_R = eff_n_0 * sigma2_R
 
-        # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_R) * max_weight
+        # Theoretical upper bound on boundary null process variance:
+        # sigma2 <= (1 - gamma_R) * max_weight
         v_0_max_R = eff_n_0 * (1.0 - gamma_R) * max_weight
         v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
         v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
@@ -783,8 +752,7 @@ def compute_prior_and_target_var(
             else pos_mass_ge_lower
         )
         neg_mass_ge_upper = np.maximum(
-            0.0,
-            (N - idx_upper) / N * max_weight - pos_mass_ge_upper
+            0.0, (N - idx_upper) / N * max_weight - pos_mass_ge_upper
         )
 
         # Boundary null cap for Precision: under H_0 (Precision <= gamma_P),
@@ -794,7 +762,7 @@ def compute_prior_and_target_var(
         null_fp_cap = ((1.0 - gamma_P) / gamma_P) * pos_mass_ge_lower[np.newaxis, :]
         neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
         neg_var_upper = (gamma_P**2) * neg_mass_ge_upper_2d
-        pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
+        pos_var_lower = (1.0 - gamma_P) ** 2 * pos_mass_ge_lower
 
         b_P = (1.0 - gamma_P) * max_weight
         v_0_floor_P = (2.0 * b_P**2) / log_delta_P_inv
@@ -802,7 +770,8 @@ def compute_prior_and_target_var(
         total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
         v_0_target_P = eff_n_0 * total_var
 
-        # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_P) * max_weight
+        # Theoretical upper bound on boundary null process variance:
+        # sigma2 <= (1 - gamma_P) * max_weight
         v_0_max_P = eff_n_0 * (1.0 - gamma_P) * max_weight
         v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
         v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
@@ -852,12 +821,13 @@ def compute_prior_and_target_var(
     v_0_floor_R = (2.0 * b_R**2) / log_delta_R_inv
 
     # Estimated second moment of the recall margin increment
-    sigma2_R = (
-        (1.0 - gamma_R)**2 * pos_mass_ge_lower + (gamma_R ** 2) * pos_mass_lt_lower
-    )
+    sigma2_R = (1.0 - gamma_R) ** 2 * pos_mass_ge_lower + (
+        gamma_R**2
+    ) * pos_mass_lt_lower
     v_0_target_R = eff_n_0 * sigma2_R
 
-    # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_R) * w_max_lower
+    # Theoretical upper bound on boundary null process variance:
+    # sigma2 <= (1 - gamma_R) * w_max_lower
     v_0_max_R = eff_n_0 * (1.0 - gamma_R) * w_max_lower
     v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
     v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
@@ -889,9 +859,7 @@ def compute_prior_and_target_var(
         0.0,
         1.0,
     )
-    null_failure_prob_R = (
-        (1.0 - gamma_R) * eta_R / (gamma_R + (1.0 - gamma_R) * eta_R)
-    )
+    null_failure_prob_R = (1.0 - gamma_R) * eta_R / (gamma_R + (1.0 - gamma_R) * eta_R)
     null_failure_prob_R = np.clip(null_failure_prob_R, 0.0, 1.0 - gamma_R)
 
     # Precision prior and target variance:
@@ -907,8 +875,8 @@ def compute_prior_and_target_var(
     # false positive mass cannot exceed (1 - gamma_P)/gamma_P * true positive mass.
     null_fp_cap = ((1.0 - gamma_P) / gamma_P) * pos_mass_ge_lower[np.newaxis, :]
     neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
-    neg_var_upper = (gamma_P ** 2) * neg_mass_ge_upper_2d
-    pos_var_lower = (1.0 - gamma_P)**2 * pos_mass_ge_lower
+    neg_var_upper = (gamma_P**2) * neg_mass_ge_upper_2d
+    pos_var_lower = (1.0 - gamma_P) ** 2 * pos_mass_ge_lower
 
     # Safety floor for precision (incorporates positive jumps only)
     b_P = (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
@@ -919,7 +887,8 @@ def compute_prior_and_target_var(
     total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
     v_0_target_P = eff_n_0 * total_var
 
-    # Theoretical upper bound on boundary null process variance: sigma2 <= (1 - gamma_P) * w_max_lower
+    # Theoretical upper bound on boundary null process variance:
+    # sigma2 <= (1 - gamma_P) * w_max_lower
     v_0_max_P = eff_n_0 * (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
     v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
     v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
@@ -970,9 +939,7 @@ def compute_prior_and_target_var(
     )
 
     eta_P = np.clip(ratio_P_proxy, ratio_P_min, ratio_P_max)
-    null_failure_prob_P = (
-        (1.0 - gamma_P) * eta_P / (gamma_P + (1.0 - gamma_P) * eta_P)
-    )
+    null_failure_prob_P = (1.0 - gamma_P) * eta_P / (gamma_P + (1.0 - gamma_P) * eta_P)
     null_failure_prob_P = np.clip(null_failure_prob_P, 1e-6, 0.5)
 
     return PriorAndTargetVar(
@@ -986,7 +953,8 @@ def compute_prior_and_target_var(
 
 
 class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
-    """Asymptotic Gaussian mixture test supermartingale strategy (Howard et al. 2021).
+    """Asymptotic Gaussian mixture test supermartingale strategy
+    (Howard et al. 2021).
     """
 
     def __init__(
@@ -1048,11 +1016,7 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         if len(neg_scores) > 0:
             self._num_fp += np.sum(neg_scores[:, None] >= self.thresholds_upper, axis=0)
 
-    def _create_mart_R(
-        self,
-        k: int,
-        reverse: bool = False
-    ) -> TestSupermartingale:
+    def _create_mart_R(self, k: int, reverse: bool = False) -> TestSupermartingale:
         v_0 = float(self.v_0.prior_R(k))
         return GaussianMixtureSupermartingale(m=0.0, v_0=v_0, reverse=reverse)
 
@@ -1091,9 +1055,7 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         tau_lower = self.thresholds[k_lower]
         is_true_pos = labels & (scores >= tau_lower)
         is_false_pos = (~labels) & (scores >= tau_upper)
-        rvs = (
-            (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
-        )
+        rvs = (1.0 - self.gamma_P) * is_true_pos - self.gamma_P * is_false_pos
         if weights is not None:
             rvs *= weights
         return rvs
@@ -1159,12 +1121,13 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             metric="Precision",
             thresholds=(tau_lower, tau_upper),
             variance_ratio_bound=self.variance_ratio_bound,
-            delta=delta
+            delta=delta,
         )
 
 
 class ACTIS:
-    r"""Stateful anytime-valid threshold tuner for cascades using confidence sequences.
+    r"""Stateful anytime-valid threshold tuner for cascades using confidence
+    sequences.
     """
 
     def __init__(
@@ -1292,7 +1255,7 @@ class ACTIS:
                 horizon=horizon,
                 max_weight_ge=max_weight_ge,
                 max_weight_lt=max_weight_lt,
-                max_weight_ge_upper=max_weight_ge_upper
+                max_weight_ge_upper=max_weight_ge_upper,
             )
         else:
             raise ValueError(f"Unknown `conf_seq` mode: {self.conf_seq}")
@@ -1371,9 +1334,7 @@ class ACTIS:
         if self.pop_size is not None:
             unique_indices = set(indices)
             if len(unique_indices) < len(indices):
-                raise ValueError(
-                    "Duplicate indices encountered within the sample."
-                )
+                raise ValueError("Duplicate indices encountered within the sample.")
             duplicates = unique_indices.intersection(self.seen_indices)
             if len(duplicates) > 0:
                 raise ValueError(
@@ -1400,16 +1361,18 @@ class ACTIS:
             num_samples=len(self.seen_indices),
             predicted_oracle_rate=predicted_oracle_rate,
             asymptotic_diag_R=diag_R,
-            asymptotic_diag_P=diag_P
+            asymptotic_diag_P=diag_P,
         )
 
         return self.current_thresholds
 
-    def _tune_thresholds(self) -> tuple[
+    def _tune_thresholds(
+        self,
+    ) -> tuple[
         float,
         float,
         AsymptoticValidityDiagnostics | None,
-        AsymptoticValidityDiagnostics | None
+        AsymptoticValidityDiagnostics | None,
     ]:
         r"""Evaluates the test supermartingales across candidate threshold grids to find
         the optimal pair of thresholds."""
@@ -1440,8 +1403,9 @@ class ACTIS:
         for k in range(len(self.thresholds_upper) - 1, -1, -1):
             tau_k = float(self.thresholds_upper[k])
 
-            if (tau_k < tau_lower) or \
-                not self.conf_seqs.is_precision_satisfied(k, k_lower):
+            if (tau_k < tau_lower) or not self.conf_seqs.is_precision_satisfied(
+                k, k_lower
+            ):
                 break
 
             d = None
@@ -1456,12 +1420,7 @@ class ACTIS:
             tau_upper = tau_k
             diag_P = d
 
-        return (
-            tau_upper,
-            tau_lower,
-            diag_R,
-            diag_P
-        )
+        return (tau_upper, tau_lower, diag_R, diag_P)
 
     def _compute_optimistic_thresholds(self) -> tuple[float, float]:
         r"""Computes the best-case (optimistic) candidate thresholds within the anytime
@@ -1535,7 +1494,7 @@ class ACTIS:
         population_scores: Sequence[float] | NDArray[np.float64],
         batch_size: int,
         max_sample_size: int | None = None,
-        min_expected_savings: float = 0.0
+        min_expected_savings: float = 0.0,
     ) -> tuple[bool, StoppingDiagnostics]:
         r"""Determines whether continuing to sample is justified based on the
         Uncertainty Gap between currently accepted conservative thresholds

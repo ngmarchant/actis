@@ -78,16 +78,22 @@ class TestComputePriorVar:
         # All values should be strictly positive and finite
         assert all([v_0.prior_R(k) > 0.0 for k in range(len(thresholds))])
         assert all([math.isfinite(v_0.prior_R(k)) for k in range(len(thresholds))])
-        assert all([
-            v_0.prior_P(k_upper, k_lower) > 0.0
-            for k_upper, k_lower
-            in zip(range(len(thresholds_upper)), range(len(thresholds)))
-        ])
-        assert all([
-            math.isfinite(v_0.prior_P(k_upper, k_lower))
-            for k_upper, k_lower
-            in zip(range(len(thresholds_upper)), range(len(thresholds)))
-        ])
+        assert all(
+            [
+                v_0.prior_P(k_upper, k_lower) > 0.0
+                for k_upper, k_lower in zip(
+                    range(len(thresholds_upper)), range(len(thresholds))
+                )
+            ]
+        )
+        assert all(
+            [
+                math.isfinite(v_0.prior_P(k_upper, k_lower))
+                for k_upper, k_lower in zip(
+                    range(len(thresholds_upper)), range(len(thresholds))
+                )
+            ]
+        )
 
         # 2. When thresholds_upper is None, defaults to shape (num_lower, num_lower)
         v_0_default = compute_prior_and_target_var(
@@ -147,16 +153,22 @@ class TestComputePriorVar:
         # Variances should be strictly positive, non-infinite
         assert all([v_0.prior_R(k) > 0.0 for k in range(len(thresholds))])
         assert all([math.isfinite(v_0.prior_R(k)) for k in range(len(thresholds))])
-        assert all([
-            v_0.prior_P(k_upper, k_lower) > 0.0
-            for k_upper, k_lower
-            in zip(range(len(thresholds)), range(len(thresholds)))
-        ])
-        assert all([
-            math.isfinite(v_0.prior_P(k_upper, k_lower))
-            for k_upper, k_lower
-            in zip(range(len(thresholds)), range(len(thresholds)))
-        ])
+        assert all(
+            [
+                v_0.prior_P(k_upper, k_lower) > 0.0
+                for k_upper, k_lower in zip(
+                    range(len(thresholds)), range(len(thresholds))
+                )
+            ]
+        )
+        assert all(
+            [
+                math.isfinite(v_0.prior_P(k_upper, k_lower))
+                for k_upper, k_lower in zip(
+                    range(len(thresholds)), range(len(thresholds))
+                )
+            ]
+        )
 
 
 class TestAsymptoticCascadeConfSeqs:
@@ -432,6 +444,7 @@ class TestRefinedAsymptoticDiagnostics:
             delta=0.025,
         )
         assert diag_71.is_valid() is False
+        assert diag_71.p_value is not None
         assert diag_71.p_value > 0.025
 
         # 3. At k_FN = 0, n_TP = 72 gives p = 0.0249 <= 0.025 (passes)
@@ -445,6 +458,7 @@ class TestRefinedAsymptoticDiagnostics:
             delta=0.025,
         )
         assert diag_72.is_valid() is True
+        assert diag_72.p_value is not None
         assert diag_72.p_value <= 0.025
 
         # 4. At k_FN = 1: n_TP = 108 fails (p = 0.0255), n_TP = 109 passes (p = 0.0242)
@@ -458,6 +472,7 @@ class TestRefinedAsymptoticDiagnostics:
             delta=0.025,
         )
         assert diag_108.is_valid() is False
+        assert diag_108.p_value is not None
         assert diag_108.p_value > 0.025
 
         diag_109 = AsymptoticValidityDiagnostics(
@@ -470,6 +485,7 @@ class TestRefinedAsymptoticDiagnostics:
             delta=0.025,
         )
         assert diag_109.is_valid() is True
+        assert diag_109.p_value is not None
         assert diag_109.p_value <= 0.025
 
         # 5. Precision exact binomial check symmetry
@@ -486,9 +502,7 @@ class TestRefinedAsymptoticDiagnostics:
         assert diag_p_fail.is_valid() is False
         assert diag_p_fail.p_value is not None
         assert diag_p_fail.p_value > 0.025
-        assert any(
-            "Precision binomial p-value" in s for s in diag_p_fail.diagnose()
-        )
+        assert any("Precision binomial p-value" in s for s in diag_p_fail.diagnose())
 
     def test_deterministic_anchor_exemptions(self):
         thresholds = np.array([0.0, 0.5, 1.0])
@@ -552,16 +566,10 @@ class TestRefinedAsymptoticDiagnostics:
         # Candidate: k_upper = 1 (tau_upper=0.6), k_lower = 1 (tau_lower=0.4)
         # num_tp = 80, num_fn = 0, num_fp = 0
         # At n_tp = 80, exact binomial p_val <= 0.025 (passes)
-        recall_diag = conf_seqs.asymptotic_diag_R(
-            k_lower=1
-        )
-        precision_diag = conf_seqs.asymptotic_diag_P(
-            k_upper=1,
-            k_lower=1
-        )
-        is_valid = (
-            (recall_diag is None or recall_diag.is_valid()) and
-            (precision_diag is None or precision_diag.is_valid())
+        recall_diag = conf_seqs.asymptotic_diag_R(k_lower=1)
+        precision_diag = conf_seqs.asymptotic_diag_P(k_upper=1, k_lower=1)
+        is_valid = (recall_diag is None or recall_diag.is_valid()) and (
+            precision_diag is None or precision_diag.is_valid()
         )
         assert is_valid is True
         if recall_diag is not None:
@@ -588,16 +596,10 @@ class TestRefinedAsymptoticDiagnostics:
             [np.ones(43, dtype=bool), np.zeros(60, dtype=bool)]
         )
         conf_seqs_small.add_samples(scores=scores_small, labels=labels_small)
-        recall_diag = conf_seqs_small.asymptotic_diag_R(
-            k_lower=1
-        )
-        precision_diag = conf_seqs_small.asymptotic_diag_P(
-            k_upper=1,
-            k_lower=1
-        )
-        is_valid_small = (
-            (recall_diag is None or recall_diag.is_valid()) and
-            (precision_diag is None or precision_diag.is_valid())
+        recall_diag = conf_seqs_small.asymptotic_diag_R(k_lower=1)
+        precision_diag = conf_seqs_small.asymptotic_diag_P(k_upper=1, k_lower=1)
+        is_valid_small = (recall_diag is None or recall_diag.is_valid()) and (
+            precision_diag is None or precision_diag.is_valid()
         )
         assert not is_valid_small
         if recall_diag is not None:
@@ -637,7 +639,8 @@ class TestRefinedAsymptoticDiagnostics:
     def test_precision_null_failure_prob_proxy_and_geometric_floor(self):
         N = 1000
         scores = np.linspace(0.01, 0.99, N)
-        # Proposal strongly biased towards high scores: q(x) proportional to s(x)^2 + 0.05
+        # Proposal strongly biased towards high scores:
+        # q(x) proportional to s(x)^2 + 0.05
         weights = 1.0 / (scores**2 + 0.05)
         weights = weights / np.sum(weights) * N  # normalize so mean weight is ~1
 
@@ -664,7 +667,8 @@ class TestRefinedAsymptoticDiagnostics:
                 assert 0.0 < p0_P <= 0.5
 
         # For matched thresholds (tau_u = tau_l = 0.5), proxy weighting ensures
-        # True Positives receive higher proposal mass than False Positives, so p0_P < 1 - gamma_P
+        # True Positives receive higher proposal mass than False Positives,
+        # so p0_P < 1 - gamma_P
         res_matched = compute_prior_and_target_var(
             scores=scores,
             gamma_R=gamma_R,
@@ -692,7 +696,9 @@ class TestRefinedAsymptoticDiagnostics:
         # null_failure_prob_P should be exactly (1 - gamma_P) = 0.05
         for k_u in range(len(thresholds_upper)):
             for k_l in range(len(thresholds)):
-                assert res_const.null_failure_prob_P(k_u, k_l) == pytest.approx(1.0 - gamma_P, abs=1e-5)
+                assert res_const.null_failure_prob_P(k_u, k_l) == pytest.approx(
+                    1.0 - gamma_P, abs=1e-5
+                )
 
     def test_compute_prior_and_target_var_uniform_fast_path_equivalence(self):
         rng = np.random.default_rng(42)
@@ -721,20 +727,40 @@ class TestRefinedAsymptoticDiagnostics:
             weights=np.ones(N),
         )
 
-        np.testing.assert_allclose(res_none._prior_R, res_ones._prior_R, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res_none._prior_P, res_ones._prior_P, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res_none._target_R, res_ones._target_R, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res_none._target_P, res_ones._target_P, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res_none._null_failure_prob_R, res_ones._null_failure_prob_R, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res_none._null_failure_prob_P, res_ones._null_failure_prob_P, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(
+            res_none._prior_R, res_ones._prior_R, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res_none._prior_P, res_ones._prior_P, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res_none._target_R, res_ones._target_R, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res_none._target_P, res_ones._target_P, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res_none._null_failure_prob_R,
+            res_ones._null_failure_prob_R,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            res_none._null_failure_prob_P,
+            res_ones._null_failure_prob_P,
+            rtol=1e-12,
+            atol=1e-12,
+        )
 
     def test_compute_prior_and_target_var_numerical_stability_extreme_tails(self):
         # Extreme scores close to 1.0 and 0.0
         N = 2000
-        scores = np.concatenate([
-            np.full(1000, 1.0 - 1e-14),
-            np.full(1000, 1e-14),
-        ])
+        scores = np.concatenate(
+            [
+                np.full(1000, 1.0 - 1e-14),
+                np.full(1000, 1e-14),
+            ]
+        )
         thresholds = np.array([0.0, 1e-15, 0.5, 1.0 - 1e-15, 1.0])
         thresholds_upper = np.array([0.5, 1.0 - 1e-15, 1.0])
 
@@ -757,8 +783,12 @@ class TestRefinedAsymptoticDiagnostics:
         assert np.all(np.isfinite(res._prior_P)) and np.all(res._prior_P > 0)
         assert np.all(np.isfinite(res._target_R)) and np.all(res._target_R >= 0)
         assert np.all(np.isfinite(res._target_P)) and np.all(res._target_P >= 0)
-        assert np.all(np.isfinite(res._null_failure_prob_R)) and np.all(res._null_failure_prob_R >= 0)
-        assert np.all(np.isfinite(res._null_failure_prob_P)) and np.all(res._null_failure_prob_P > 0)
+        assert np.all(np.isfinite(res._null_failure_prob_R)) and np.all(
+            res._null_failure_prob_R >= 0
+        )
+        assert np.all(np.isfinite(res._null_failure_prob_P)) and np.all(
+            res._null_failure_prob_P > 0
+        )
 
 
 class TestBoundaryNullVarianceBounds:
@@ -785,7 +815,8 @@ class TestBoundaryNullVarianceBounds:
             weights=None,
         )
 
-        # 1. Target variance must never exceed theoretical ceiling eff_n_0 * (1 - gamma) * max_weight
+        # 1. Target variance must never exceed theoretical ceiling
+        # eff_n_0 * (1 - gamma) * max_weight
         v_0_max_R = eff_n_0 * (1.0 - gamma_R) * 1.0
         v_0_max_P = eff_n_0 * (1.0 - gamma_P) * 1.0
         assert np.all(res._target_R <= v_0_max_R + 1e-12)
@@ -801,10 +832,18 @@ class TestBoundaryNullVarianceBounds:
             thresholds_upper=thresholds_upper,
             weights=np.ones(N),
         )
-        np.testing.assert_allclose(res._target_R, res_weighted._target_R, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res._target_P, res_weighted._target_P, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res._prior_R, res_weighted._prior_R, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(res._prior_P, res_weighted._prior_P, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(
+            res._target_R, res_weighted._target_R, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res._target_P, res_weighted._target_P, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res._prior_R, res_weighted._prior_R, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            res._prior_P, res_weighted._prior_P, rtol=1e-12, atol=1e-12
+        )
 
     def test_weighted_theoretical_ceiling(self):
         # Non-uniform importance weights
@@ -846,7 +885,3 @@ class TestBoundaryNullVarianceBounds:
 
         assert np.all(res._target_R <= v_0_max_R + 1e-12)
         assert np.all(res._target_P <= v_0_max_P + 1e-12)
-
-
-
-

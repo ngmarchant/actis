@@ -36,7 +36,7 @@ def compute_pr_proposal(
     thresholds: ArrayLike,
     thresholds_upper: ArrayLike | None = None,
     alpha: float | None = None,
-    method: ProposalMethod = "snr_balanced"
+    method: ProposalMethod = "snr_balanced",
 ) -> NDArray[np.float64]:
     r"""Computes a proposal distribution for importance sampling in a
     two-threshold cascade with defensive mixing.
@@ -83,7 +83,7 @@ def compute_pr_proposal(
         M_upper = M_lower
 
     if method == "snr_balanced":
-        w_lower =  1.0 + ((1.0 - gamma_P) / max(gamma_P, 1e-6)) ** 2
+        w_lower = 1.0 + ((1.0 - gamma_P) / max(gamma_P, 1e-6)) ** 2
         w_upper = 1.0
         w_base = (gamma_R / max(1.0 - gamma_R, 1e-6)) ** 2
     elif method == "var_min":
