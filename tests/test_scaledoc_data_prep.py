@@ -18,8 +18,12 @@ from experiments.data_prep.labeling import (
 )
 from experiments.data_prep.loaders import (
     load_bigpatent_documents,
+    load_court_documents,
     load_govreport_documents,
     load_queries,
+    load_review_documents,
+    load_screenplay_documents,
+    load_wiki_documents,
     parse_pubmed_text,
 )
 from experiments.data_prep.models import (
@@ -352,6 +356,17 @@ def test_loaders_pass_cache_dir():
 
         load_bigpatent_documents(n=1, cache_dir="/custom/cache/dir")
         assert mock_load.call_args[1]["cache_dir"] == "/custom/cache/dir"
+
+def test_load_court_documents(tmp_path):
+    opinions_file = tmp_path / "opinions.csv"
+    opinions_file.write_text(
+        "opinion_text\nFirst opinion\n\nSecond opinion\n",
+        encoding="utf-8",
+    )
+
+    opinions = load_court_documents(opinions_file, n=10)
+
+    assert opinions["content"] == ["First opinion", "Second opinion"]
 
 
 def test_dotenv_loading(tmp_path):
@@ -1301,4 +1316,92 @@ def test_litellm_disables_aiohttp_transport():
     assert litellm.disable_aiohttp_transport is True
 
 
+def test_load_court_documents_random_sampling(tmp_path):
+    opinions_file = tmp_path / "opinions.csv"
+    opinions_file.write_text(
+        "opinion_text\nDoc A\nDoc B\nDoc C\nDoc D\nDoc E\n",
+        encoding="utf-8",
+    )
 
+    opinions_1 = load_court_documents(opinions_file, n=3, seed=42)
+    opinions_2 = load_court_documents(opinions_file, n=3, seed=42)
+    opinions_diff = load_court_documents(opinions_file, n=3, seed=123)
+
+    assert len(opinions_1) == 3
+    assert opinions_1["content"] == opinions_2["content"]
+    assert all(
+        doc in ["Doc A", "Doc B", "Doc C", "Doc D", "Doc E"]
+        for doc in opinions_1["content"]
+    )
+    assert opinions_1["content"] != opinions_diff["content"]
+
+
+def test_load_review_documents_language_filter_and_sampling(tmp_path):
+    reviews_csv = tmp_path / "steam_reviews.csv"
+    reviews_csv.write_text(
+        "review,language\n"
+        "English review 1,english\n"
+        "Non-English review,schinese\n"
+        "English review 2,english\n"
+        "Another foreign,russian\n"
+        ",english\n"
+        "English review 3,english\n"
+        "English review 4,english\n",
+        encoding="utf-8",
+    )
+
+    with patch(
+        "experiments.data_prep.loaders._download_kaggle_dataset",
+        return_value=tmp_path,
+    ):
+        res1 = load_review_documents(n=2, seed=42, cache_dir=tmp_path / "cache")
+        res2 = load_review_documents(n=2, seed=42, cache_dir=tmp_path / "cache")
+
+    assert len(res1) == 2
+    assert res1["content"] == res2["content"]
+    for review in res1["content"]:
+        assert review.startswith("English review")
+
+
+def test_load_wiki_documents_random_sampling():
+    # Mock convokit Corpus
+    mock_corpus = MagicMock()
+    mock_corpus.get_conversation_ids.return_value = ["c1", "c2", "c3", "c4"]
+
+    def get_conv(cid):
+        conv = MagicMock()
+        utt = MagicMock()
+        utt.text = f"Text of {cid}"
+        conv.iter_utterances.return_value = [utt]
+        return conv
+
+    mock_corpus.get_conversation.side_effect = get_conv
+
+    with (
+        patch("convokit.download", return_value="dummy_path"),
+        patch("convokit.Corpus", return_value=mock_corpus),
+    ):
+        wiki1 = load_wiki_documents(n=2, seed=42)
+        wiki2 = load_wiki_documents(n=2, seed=42)
+        wiki_diff = load_wiki_documents(n=2, seed=99)
+
+    assert len(wiki1) == 2
+    assert wiki1["content"] == wiki2["content"]
+    assert wiki1["content"] != wiki_diff["content"]
+
+
+def test_prepare_data_cli_seed_arg():
+    import sys
+
+    from experiments.prepare_data import parse_args
+
+    test_args = [
+        "prepare_data.py",
+        "--dataset",
+        "pubmed",
+        "--seed",
+        "1234",
+    ]
+    with patch.object(sys, "argv", test_args):
+        args = parse_args()
+        assert args.seed == 1234

@@ -84,6 +84,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of documents to extract (default: 10000)",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for document sampling (default: 42)",
+    )
+    parser.add_argument(
         "--queries",
         nargs="+",
         default=["0"],
@@ -223,6 +229,7 @@ def get_base_documents(
     split: str,
     num_docs: int,
     output_dir: Path,
+    seed: int = 42,
     cache_dir: Path | str | None = None,
     source_path: Path | str | None = None,
 ) -> Dataset:
@@ -251,7 +258,7 @@ def get_base_documents(
 
     print(
         f"Preparing base documents for '{dataset_name}' "
-        f"(split='{split}', n={num_docs})..."
+        f"(split='{split}', n={num_docs}, seed={seed})..."
     )
     if dataset_name == "pubmed":
         ds = load_pubmed_documents(
@@ -263,6 +270,7 @@ def get_base_documents(
         ds = load_bigpatent_documents(
             n=num_docs,
             split=split,
+            seed=seed,
             cache_dir=cache_dir,
         )
     elif dataset_name == "gov_report":
@@ -272,17 +280,18 @@ def get_base_documents(
             cache_dir=cache_dir,
         )
     elif dataset_name == "screenplay":
-        ds = load_screenplay_documents(n=num_docs, cache_dir=cache_dir)
+        ds = load_screenplay_documents(n=num_docs, seed=seed, cache_dir=cache_dir)
     elif dataset_name == "review":
-        ds = load_review_documents(n=num_docs, cache_dir=cache_dir)
+        ds = load_review_documents(n=num_docs, seed=seed, cache_dir=cache_dir)
     elif dataset_name == "wiki":
-        ds = load_wiki_documents(n=num_docs, cache_dir=cache_dir)
+        ds = load_wiki_documents(n=num_docs, seed=seed, cache_dir=cache_dir)
     elif dataset_name == "court":
         if source_path is None:
             raise ValueError("The court dataset requires --source-path.")
         ds = load_court_documents(
             path=source_path,
             n=num_docs,
+            seed=seed,
         )
     else:
         raise ValueError(f"Unknown dataset '{dataset_name}'")
@@ -666,6 +675,7 @@ def main() -> int:
         split=split,
         num_docs=args.num_docs,
         output_dir=output_dir,
+        seed=args.seed,
         cache_dir=cache_dir,
         source_path=args.source_path,
     )
@@ -701,6 +711,7 @@ def main() -> int:
     )
 
     # Initialize models
+    # TODO: ensure model supports non-zero temperature.
     litellm_kwargs = {"temperature": args.temperature}
     oracle = None
     if not args.skip_oracle:

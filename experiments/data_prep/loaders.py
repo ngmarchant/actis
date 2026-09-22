@@ -178,6 +178,7 @@ def _download_kaggle_dataset(
 
 def load_screenplay_documents(
     n: int = 10000,
+    seed: int = 42,
     cache_dir: str | Path | None = None,
 ) -> Dataset:
     """Loads one movie screenplay per row from Kaggle's movie scripts corpus."""
@@ -191,7 +192,10 @@ def load_screenplay_documents(
             f"'{screenplay_dir}'. The Kaggle dataset layout may have changed."
         )
 
-    files = sorted(screenplay_dir.glob("*.txt"))[:n]
+    files = sorted(screenplay_dir.glob("*.txt"))
+    if n < len(files):
+        rng = random.Random(seed)
+        files = rng.sample(files, n)
     documents = [file.read_text(encoding="utf-8", errors="replace") for file in files]
     return Dataset.from_dict({
         "id": list(range(len(documents))),
@@ -201,11 +205,15 @@ def load_screenplay_documents(
 
 def load_review_documents(
     n: int = 10000,
+    seed: int = 42,
     cache_dir: str | Path | None = None,
+    chunk_size: int = 250_000,
 ) -> Dataset:
-    """Loads Steam review text from Kaggle's Steam Reviews 2021 dataset."""
-    import csv
+    """Loads Steam review text from Kaggle's Steam Reviews 2021 dataset.
 
+    Filters for English reviews and draws a uniform random subsample of size n
+    using streaming reservoir sampling to minimize memory usage on large CSV files.
+    """
     dataset_dir = _download_kaggle_dataset("review", cache_dir)
     reviews_file = dataset_dir / "steam_reviews.csv"
     if not reviews_file.is_file():
@@ -214,26 +222,55 @@ def load_review_documents(
             f"'{reviews_file}'. The Kaggle dataset layout may have changed."
         )
 
-    documents: list[str] = []
-    with reviews_file.open("r", encoding="utf-8", errors="replace", newline="") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None or "review" not in reader.fieldnames:
-            raise ValueError(f"Expected a 'review' column in '{reviews_file}'.")
-        for row in reader:
-            review = row["review"]
-            if review:
-                documents.append(review)
-            if len(documents) >= n:
-                break
+    # Detect available columns
+    header_df = pd.read_csv(reviews_file, nrows=0)
+    if "review" not in header_df.columns:
+        raise ValueError(f"Expected a 'review' column in '{reviews_file}'.")
+    has_language = "language" in header_df.columns
+
+    cols = ["review", "language"] if has_language else ["review"]
+
+    rng = random.Random(seed)
+    reservoir: list[str] = []
+    total_seen = 0
+
+    for chunk in pd.read_csv(
+        reviews_file,
+        usecols=cols,
+        chunksize=chunk_size,
+        dtype=str,
+        on_bad_lines="skip",
+        encoding="utf-8",
+    ):  # ty: ignore[no-matching-overload]
+        if has_language:
+            mask = (chunk["language"] == "english") & chunk["review"].notna()
+        else:
+            mask = chunk["review"].notna()
+
+        reviews = chunk.loc[mask, "review"]
+        reviews = reviews[reviews.str.strip() != ""]
+        items = reviews.tolist()
+
+        for item in items:
+            total_seen += 1
+            if len(reservoir) < n:
+                reservoir.append(item)
+            else:
+                j = rng.randint(0, total_seen - 1)
+                if j < n:
+                    reservoir[j] = item
+
+    rng.shuffle(reservoir)
 
     return Dataset.from_dict({
-        "id": list(range(len(documents))),
-        "content": documents,
+        "id": list(range(len(reservoir))),
+        "content": reservoir,
     })
 
 
 def load_wiki_documents(
     n: int = 10000,
+    seed: int = 42,
     cache_dir: str | Path | None = None,
 ) -> Dataset:
     """Loads one Wikipedia Talk-page conversation per row from ConvoKit."""
@@ -250,8 +287,13 @@ def load_wiki_documents(
     else:
         corpus_path = download("wiki-corpus", data_dir=str(cache_dir))
     corpus = Corpus(filename=corpus_path)
+    conv_ids = sorted(corpus.get_conversation_ids())
+    rng = random.Random(seed)
+    rng.shuffle(conv_ids)
+
     documents: list[str] = []
-    for conversation in corpus.iter_conversations():
+    for cid in conv_ids:
+        conversation = corpus.get_conversation(cid)
         text = "\n".join(
             utterance.text
             for utterance in conversation.iter_utterances()
@@ -271,6 +313,7 @@ def load_wiki_documents(
 def load_court_documents(
     path: str | Path,
     n: int = 10000,
+    seed: int = 42,
     text_column: str = "opinion_text",
 ) -> Dataset:
     """Loads Supreme Court opinions from a local CourtListener-derived CSV file."""
@@ -279,8 +322,12 @@ def load_court_documents(
     if not opinions_file.is_file():
         raise FileNotFoundError(f"Court opinion CSV not found at '{opinions_file}'.")
 
-    df = pd.read_csv(opinions_file, usecols=[text_column], nrows=n, encoding="utf-8")
-    documents: list[str] = df[text_column].dropna().astype(str).tolist()
+    df = pd.read_csv(opinions_file, usecols=[text_column], encoding="utf-8")  # ty: ignore[no-matching-overload]
+    series = df[text_column].dropna().astype(str)
+    series = series[series.str.strip() != ""]
+    if n < len(series):
+        series = series.sample(n=n, random_state=seed)
+    documents: list[str] = series.tolist()
 
     return Dataset.from_dict({
         "id": list(range(len(documents))),
