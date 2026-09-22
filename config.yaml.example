@@ -10,41 +10,49 @@
 # ==============================================================================
 
 model_list:
-  - model_name: azure/gpt-4o
+  - model_name: azure/gpt-5.6-terra
     litellm_params:
-      model: azure/gpt-4o
+      model: azure/gpt-5.6-terra
       api_base: os.environ/AZURE_API_BASE
       api_key: os.environ/AZURE_API_KEY
+      reasoning_effort: "none"
+      max_tokens: 16
+      top_logprobs: 5
     model_info:
-      deprecation_date: 2027-04-14
-      max_input_tokens: 128000
-      max_output_tokens: 16384
-      max_tokens: 16384
-      input_cost_per_token: 0.000003476
-      output_cost_per_token: 0.000013905
-      cache_creation_input_token_cost: 0.000001738
-      mode: chat
-      supports_function_calling: true,
-      supports_parallel_function_calling: true
-      supports_prompt_caching: true
-      supports_response_schema: true
-      supports_tool_choice: true
-      supports_vision: true
-
-  - model_name: azure/gpt-5
-    litellm_params:
-      model: azure/gpt-5
-      api_base: os.environ/AZURE_API_BASE
-      api_key: os.environ/AZURE_API_KEY
-    model_info:
-      deprecation_date: 2027-02-09
+      cache_creation_input_token_cost: 2.5e-06
+      cache_creation_input_token_cost_above_272k_tokens: 5.0e-06
+      cache_creation_input_token_cost_above_272k_tokens_flex: 2.5e-06
+      cache_creation_input_token_cost_priority: 5.0e-06
+      cache_creation_input_token_cost_above_272k_tokens_priority: 1.0e-05
+      cache_creation_input_token_cost_flex: 1.25e-06
+      cache_read_input_token_cost: 2.0e-07
+      cache_read_input_token_cost_above_272k_tokens: 4.0e-07
+      cache_read_input_token_cost_above_272k_tokens_flex: 2.0e-07
+      cache_read_input_token_cost_priority: 4.0e-07
+      cache_read_input_token_cost_above_272k_tokens_priority: 8.0e-07
+      cache_read_input_token_cost_flex: 1.0e-07
+      deprecation_date: '2028-01-11'
+      input_cost_per_token: 2.0e-06
+      input_cost_per_token_above_272k_tokens: 4.0e-06
+      input_cost_per_token_above_272k_tokens_flex: 2.0e-06
+      input_cost_per_token_priority: 4.0e-06
+      input_cost_per_token_above_272k_tokens_priority: 8.0e-06
+      input_cost_per_token_flex: 1.0e-06
       max_input_tokens: 272000
       max_output_tokens: 128000
       max_tokens: 128000
-      input_cost_per_token: 0.00000174
-      output_cost_per_token: 0.00001391
-      cache_read_input_token_cost: 0.00000018
       mode: chat
+      output_cost_per_token: 1.2e-05
+      output_cost_per_token_above_272k_tokens: 1.8e-05
+      output_cost_per_token_above_272k_tokens_flex: 9.0e-06
+      output_cost_per_token_priority: 2.4e-05
+      output_cost_per_token_above_272k_tokens_priority: 3.6e-05
+      output_cost_per_token_flex: 6.0e-06
+      search_context_cost_per_query:
+        search_context_size_high: 0.01
+        search_context_size_low: 0.01
+        search_context_size_medium: 0.01
+      source: https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20armRegionName%20eq%20'eastus'%20and%20priceType%20eq%20'Consumption'
       supported_endpoints:
         - /v1/chat/completions
         - /v1/batch
@@ -52,7 +60,7 @@ model_list:
       supported_modalities:
         - text
         - image
-      supported_output_modalities: 
+      supported_output_modalities:
         - text
       supports_function_calling: true
       supports_native_streaming: true
@@ -64,3 +72,74 @@ model_list:
       supports_system_messages: true
       supports_tool_choice: true
       supports_vision: true
+      supports_web_search: true
+      supports_none_reasoning_effort: true
+      supports_xhigh_reasoning_effort: true
+      supports_minimal_reasoning_effort: false
+
+  - model_name: azure/gpt-5.6-luna
+    litellm_params:
+      model: azure/gpt-5.6-luna
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      reasoning_effort: "none"
+      max_tokens: 16
+      top_logprobs: 5
+    model_info:
+      cache_creation_input_token_cost: 2.5e-07
+      cache_creation_input_token_cost_above_272k_tokens: 5e-07
+      cache_creation_input_token_cost_above_272k_tokens_flex: 2.5e-07
+      cache_creation_input_token_cost_priority: 5e-07
+      cache_creation_input_token_cost_above_272k_tokens_priority: 1e-06
+      cache_creation_input_token_cost_flex: 1.25e-07
+      cache_read_input_token_cost: 2e-08
+      cache_read_input_token_cost_above_272k_tokens: 4e-08
+      cache_read_input_token_cost_above_272k_tokens_flex: 2e-08
+      cache_read_input_token_cost_priority: 4e-08
+      cache_read_input_token_cost_above_272k_tokens_priority: 8e-08
+      cache_read_input_token_cost_flex: 1e-08
+      deprecation_date: '2028-01-11'
+      input_cost_per_token: 2e-07
+      input_cost_per_token_above_272k_tokens: 4e-07
+      input_cost_per_token_above_272k_tokens_flex: 2e-07
+      input_cost_per_token_priority: 4e-07
+      input_cost_per_token_above_272k_tokens_priority: 8e-07
+      input_cost_per_token_flex: 1e-07
+      max_input_tokens: 272000
+      max_output_tokens: 128000
+      max_tokens: 128000
+      mode: chat
+      output_cost_per_token: 1.2e-06
+      output_cost_per_token_above_272k_tokens: 1.8e-06
+      output_cost_per_token_above_272k_tokens_flex: 9e-07
+      output_cost_per_token_priority: 2.4e-06
+      output_cost_per_token_above_272k_tokens_priority: 3.6e-06
+      output_cost_per_token_flex: 6e-07
+      search_context_cost_per_query:
+        search_context_size_high: 0.01
+        search_context_size_low: 0.01
+        search_context_size_medium: 0.01
+      source: https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20armRegionName%20eq%20'eastus'%20and%20priceType%20eq%20'Consumption'
+      supported_endpoints:
+        - /v1/chat/completions
+        - /v1/batch
+        - /v1/responses
+      supported_modalities:
+        - text
+        - image
+      supported_output_modalities:
+        - text
+      supports_function_calling: true
+      supports_native_streaming: true
+      supports_parallel_function_calling: true
+      supports_pdf_input: true
+      supports_prompt_caching: true
+      supports_reasoning: true
+      supports_response_schema: true
+      supports_system_messages: true
+      supports_tool_choice: true
+      supports_vision: true
+      supports_web_search: true
+      supports_none_reasoning_effort: true
+      supports_xhigh_reasoning_effort: true
+      supports_minimal_reasoning_effort: false

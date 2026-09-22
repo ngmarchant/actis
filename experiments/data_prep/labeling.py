@@ -190,7 +190,9 @@ def add_model_output(
                 batch_aux = None
                 batch_costs = [{} for _ in batch_outputs]
 
-            for i, (idx, out, cost) in enumerate(zip(batch_idx, batch_outputs, batch_costs)):
+            for i, (idx, out, cost) in enumerate(
+                zip(batch_idx, batch_outputs, batch_costs)
+            ):
                 aux_val = (
                     batch_aux[i]
                     if batch_aux is not None and i < len(batch_aux)

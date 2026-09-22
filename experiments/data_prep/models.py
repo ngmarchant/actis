@@ -32,8 +32,28 @@ from scipy.special import expit, logsumexp
 # Automatically drop parameters unsupported by specific models/providers
 litellm.drop_params = True
 
-# Use standard HTTPX transport instead of aiohttp to avoid unclosed connector/session warnings
+# Use standard HTTPX transport instead of aiohttp to avoid unclosed connector/session
+# warnings
 litellm.disable_aiohttp_transport = True
+
+# Patch LiteLLM's Azure GPT-5 config to recognize GPT-5.6 as supporting logprobs
+# when reasoning_effort="none" (Azure supports logprobs for GPT-5.2+, but LiteLLM's
+# is_model_gpt_5_2_model helper previously only matched "gpt-5.2" and "gpt-5.4").
+try:
+    from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
+
+    _orig_is_gpt_5_2 = AzureOpenAIGPT5Config.is_model_gpt_5_2_model
+
+    @classmethod  # type: ignore[misc]
+    def _patched_is_gpt_5_2(cls: Any, model: str) -> bool:
+        name = model.split("/")[-1]
+        if name.startswith("gpt-5.6"):
+            return True
+        return bool(_orig_is_gpt_5_2(model))
+
+    AzureOpenAIGPT5Config.is_model_gpt_5_2_model = _patched_is_gpt_5_2  # ty: ignore[invalid-assignment]
+except Exception:
+    pass
 
 ConfigType = (
     str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
@@ -447,11 +467,42 @@ class BaseLiteLLMModel:
             return messages
         return trim_messages(messages, model=self.model, trim_ratio=1.0)
 
+    @property
+    def _expected_completion_tokens(self) -> int:
+        """
+        Resolves expected completion tokens for cost estimation and generation bounds.
+        Checks litellm_kwargs first, then router deployment litellm_params, defaulting
+        to 1.
+        """
+        if "max_tokens" in self.litellm_kwargs:
+            return int(self.litellm_kwargs["max_tokens"])
+        if "max_completion_tokens" in self.litellm_kwargs:
+            return int(self.litellm_kwargs["max_completion_tokens"])
+        if self.router is not None:
+            for m in getattr(self.router, "model_list", []):
+                if not isinstance(m, dict):
+                    continue
+                m_name = m.get("model_name")
+                target = (
+                    m.get("litellm_params", {}).get("model")
+                    if isinstance(m.get("litellm_params"), dict)
+                    else None
+                )
+                if self.model in (m_name, target):
+                    params = m.get("litellm_params", {}) or {}
+                    if "max_tokens" in params:
+                        return int(params["max_tokens"])
+                    if "max_completion_tokens" in params:
+                        return int(params["max_completion_tokens"])
+        return 1
+
     def estimate_cost(self, items: list[Any], query: Any) -> CostEstimate:
         """Estimates total tokens and cost across items."""
         total_items = len(items)
         if total_items == 0:
             return CostEstimate(0, 0, 0, 0, 0.0, self.model)
+
+        expected_completion_tokens = self._expected_completion_tokens
 
         # Sample up to 100 items uniformly at random to estimate average prompt tokens
         sample_size = min(total_items, 100)
@@ -473,7 +524,7 @@ class BaseLiteLLMModel:
                 prompt_cost, completion_cost = litellm.cost_per_token(
                     model=self.model,
                     prompt_tokens=n_tokens,
-                    completion_tokens=1,
+                    completion_tokens=expected_completion_tokens,
                 )
                 sample_costs.append(prompt_cost + completion_cost)
             except Exception:
@@ -481,7 +532,7 @@ class BaseLiteLLMModel:
 
         avg_prompt_tokens = sample_tokens / sample_size
         est_total_prompt_tokens = int(avg_prompt_tokens * total_items)
-        est_total_completion_tokens = total_items * 1
+        est_total_completion_tokens = total_items * expected_completion_tokens
         est_total_tokens = est_total_prompt_tokens + est_total_completion_tokens
         estimated_cost = (sum(sample_costs) / sample_size) * total_items
 
@@ -640,7 +691,7 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gpt-5.6-terra",
         system_prompt: str = DEFAULT_SCALEDOC_SYSTEM_PROMPT,
         user_prompt_template: str = DEFAULT_SCALEDOC_USER_TEMPLATE,
         prompt_formatter: Callable[..., list[AllMessageValues]] | None = None,
@@ -677,9 +728,7 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
                 item=item,
                 query=query,
                 semaphore=semaphore,
-                max_tokens=1,
                 logprobs=True,
-                top_logprobs=20,
             )
             content = (response.choices[0].message.content or "").strip().lower()
             pos_target = self.positive_label.strip().lower()
@@ -729,7 +778,7 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
 
     def __init__(
         self,
-        model: str,
+        model: str = "gpt-5.6-luna",
         system_prompt: str = DEFAULT_SCALEDOC_SYSTEM_PROMPT,
         user_prompt_template: str = DEFAULT_SCALEDOC_USER_TEMPLATE,
         prompt_formatter: Callable[..., list[AllMessageValues]] | None = None,
@@ -766,9 +815,7 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
                 item=item,
                 query=query,
                 semaphore=semaphore,
-                max_tokens=1,
                 logprobs=True,
-                top_logprobs=20,
             )
             score = _extract_litellm_binary_probability(
                 response,
