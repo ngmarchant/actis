@@ -60,9 +60,7 @@ QUERY_FILES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Prepare datasets with oracle labels and proxy scores."
-        )
+        description=("Prepare datasets with oracle labels and proxy scores.")
     )
     parser.add_argument(
         "--dataset",
@@ -236,6 +234,7 @@ def get_base_documents(
     cache_path = output_dir / "documents.parquet"
     if cache_path.exists():
         import pandas as pd
+
         df = pd.read_parquet(cache_path)
         if len(df) > 0:
             if len(df) < num_docs:
@@ -463,37 +462,43 @@ class ExecutionPlan:
         lines.append("")
         lines.append("--- Cost Breakdown ---")
         if self.oracle_model:
-            lines.extend([
-                f"Oracle ({self.oracle_model}):",
-                f"  Queries to run:       "
-                f"{self.total_oracle_queries} of {len(self.items)}",
-                f"  Items remaining:      {self.total_oracle_items_remaining:,}",
-                f"  Est. Prompt Tokens:   {self.total_oracle_prompt_tokens:,}",
-                f"  Est. Compl. Tokens:   {self.total_oracle_compl_tokens:,}",
-                f"  Est. Cost:            ${self.total_oracle_cost:,.4f}",
-            ])
+            lines.extend(
+                [
+                    f"Oracle ({self.oracle_model}):",
+                    f"  Queries to run:       "
+                    f"{self.total_oracle_queries} of {len(self.items)}",
+                    f"  Items remaining:      {self.total_oracle_items_remaining:,}",
+                    f"  Est. Prompt Tokens:   {self.total_oracle_prompt_tokens:,}",
+                    f"  Est. Compl. Tokens:   {self.total_oracle_compl_tokens:,}",
+                    f"  Est. Cost:            ${self.total_oracle_cost:,.4f}",
+                ]
+            )
         else:
             lines.append("Oracle: Not configured / skipped.")
 
         if self.proxy_model:
-            lines.extend([
-                f"Proxy ({self.proxy_model}):",
-                f"  Queries to run:       "
-                f"{self.total_proxy_queries} of {len(self.items)}",
-                f"  Items remaining:      {self.total_proxy_items_remaining:,}",
-                f"  Est. Prompt Tokens:   {self.total_proxy_prompt_tokens:,}",
-                f"  Est. Compl. Tokens:   {self.total_proxy_compl_tokens:,}",
-                f"  Est. Cost:            ${self.total_proxy_cost:,.4f}",
-            ])
+            lines.extend(
+                [
+                    f"Proxy ({self.proxy_model}):",
+                    f"  Queries to run:       "
+                    f"{self.total_proxy_queries} of {len(self.items)}",
+                    f"  Items remaining:      {self.total_proxy_items_remaining:,}",
+                    f"  Est. Prompt Tokens:   {self.total_proxy_prompt_tokens:,}",
+                    f"  Est. Compl. Tokens:   {self.total_proxy_compl_tokens:,}",
+                    f"  Est. Cost:            ${self.total_proxy_cost:,.4f}",
+                ]
+            )
         else:
             lines.append("Proxy:  Not configured / skipped.")
 
-        lines.extend([
-            "-" * 70,
-            f"Total Est. Tokens: {self.grand_total_tokens:,}",
-            f"Total Est. Cost:   ${self.grand_total_cost:,.4f}",
-            "=" * 70,
-        ])
+        lines.extend(
+            [
+                "-" * 70,
+                f"Total Est. Tokens: {self.grand_total_tokens:,}",
+                f"Total Est. Cost:   ${self.grand_total_cost:,.4f}",
+                "=" * 70,
+            ]
+        )
         return "\n".join(lines)
 
 
@@ -776,9 +781,7 @@ def main() -> int:
             )
         try:
             resp = (
-                input("\nProceed with all planned API calls? [y/N]: ")
-                .strip()
-                .lower()
+                input("\nProceed with all planned API calls? [y/N]: ").strip().lower()
             )
             if resp not in ("y", "yes"):
                 print("Aborted by user.")
@@ -793,7 +796,7 @@ def main() -> int:
         qid = item.qid
         q_text = item.query_text
         print("\n" + "=" * 50)
-        print(f"Processing Query {qid}: \"{q_text}\"")
+        print(f'Processing Query {qid}: "{q_text}"')
         print("=" * 50)
 
         # 1. Oracle labeling

@@ -20,12 +20,8 @@ from typing import Any
 import pandas as pd
 from datasets import Dataset, load_dataset
 
-PUBMED_BASE_URL = (
-    "https://github.com/Franck-Dernoncourt/pubmed-rct/raw/refs/heads/master/PubMed_200k_RCT"
-)
-SCALEDOC_QUERY_URL = (
-    "https://raw.githubusercontent.com/Seurgul/ScaleDoc/refs/heads/main/dataset/query.json"
-)
+PUBMED_BASE_URL = "https://github.com/Franck-Dernoncourt/pubmed-rct/raw/refs/heads/master/PubMed_200k_RCT"
+SCALEDOC_QUERY_URL = "https://raw.githubusercontent.com/Seurgul/ScaleDoc/refs/heads/main/dataset/query.json"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "scaledoc"
 DEFAULT_QUERY_FILE = DEFAULT_DATA_DIR / "query.json"
 BARGAIN_DATASET_HANDLES = {
@@ -83,7 +79,7 @@ def parse_pubmed_text(text_or_path: str | Path, n: int = 10000) -> list[str]:
                 break
 
         if matched_header is not None:
-            clean_line = stripped[len(matched_header):].lstrip("\t :.-")
+            clean_line = stripped[len(matched_header) :].lstrip("\t :.-")
         else:
             clean_line = stripped
 
@@ -152,10 +148,12 @@ def load_pubmed_documents(
             "~195,000 documents."
         )
 
-    return Dataset.from_dict({
-        "id": list(range(len(docs))),
-        "content": docs,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(docs))),
+            "content": docs,
+        }
+    )
 
 
 def _download_kaggle_dataset(
@@ -197,10 +195,12 @@ def load_screenplay_documents(
         rng = random.Random(seed)
         files = rng.sample(files, n)
     documents = [file.read_text(encoding="utf-8", errors="replace") for file in files]
-    return Dataset.from_dict({
-        "id": list(range(len(documents))),
-        "content": documents,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
 
 
 def load_review_documents(
@@ -262,10 +262,12 @@ def load_review_documents(
 
     rng.shuffle(reservoir)
 
-    return Dataset.from_dict({
-        "id": list(range(len(reservoir))),
-        "content": reservoir,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(reservoir))),
+            "content": reservoir,
+        }
+    )
 
 
 def load_wiki_documents(
@@ -304,10 +306,12 @@ def load_wiki_documents(
         if len(documents) >= n:
             break
 
-    return Dataset.from_dict({
-        "id": list(range(len(documents))),
-        "content": documents,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
 
 
 def load_court_documents(
@@ -329,10 +333,12 @@ def load_court_documents(
         series = series.sample(n=n, random_state=seed)
     documents: list[str] = series.tolist()
 
-    return Dataset.from_dict({
-        "id": list(range(len(documents))),
-        "content": documents,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
 
 
 def load_bigpatent_documents(
@@ -384,10 +390,12 @@ def load_bigpatent_documents(
 
     rng.shuffle(all_docs)
     selected_docs = all_docs[:n]
-    return Dataset.from_dict({
-        "id": list(range(len(selected_docs))),
-        "content": selected_docs,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(selected_docs))),
+            "content": selected_docs,
+        }
+    )
 
 
 def load_govreport_documents(
@@ -413,10 +421,12 @@ def load_govreport_documents(
         cache_dir=cache_dir_str,
     )
     summaries = ds["summary"][:n]
-    return Dataset.from_dict({
-        "id": list(range(len(summaries))),
-        "content": summaries,
-    })
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(summaries))),
+            "content": summaries,
+        }
+    )
 
 
 def load_queries(
@@ -466,17 +476,18 @@ def load_queries(
 
     # Base queries (q_id: 0, 1, 2, ...)
     results: list[dict[str, Any]] = [
-        {"q_id": str(item["q_id"]), "query": item["query"]}
-        for item in data[base_key]
+        {"q_id": str(item["q_id"]), "query": item["query"]} for item in data[base_key]
     ]
 
     # Check for extended queries under f"{base_key}_ext" (q_id: 0_ext, 1_ext, ...)
     ext_key = f"{base_key}_ext"
     if ext_key in data:
         for item in data[ext_key]:
-            results.append({
-                "q_id": f"{item['q_id']}_ext",
-                "query": item["query"],
-            })
+            results.append(
+                {
+                    "q_id": f"{item['q_id']}_ext",
+                    "query": item["query"],
+                }
+            )
 
     return results

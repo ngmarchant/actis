@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from datasets import Dataset
 
+from experiments.compare_lotus_vs_bargain import parse_query_args
 from experiments.data_prep.labeling import (
     add_model_output,
     add_oracle_labels,
@@ -47,10 +48,12 @@ from experiments.data_prep.models import (
     load_litellm_config,
 )
 from experiments.scenarios import (
-    SCENARIOS,
-    ScaleDocDataset,
-    ScaleDocPubMed,
+    DocumentBenchmarkDataset,
+    TabularDataset,
     _read_dataframe,
+    get_available_queries,
+    get_scenario,
+    list_scenarios,
 )
 
 
@@ -89,21 +92,22 @@ Safe for use.
     assert "###1002" not in docs[1]
 
 
-def test_load_scaledoc_queries():
-    queries = load_scaledoc_queries("pubmed")
+def test_load_queries():
+    query_file = "experiments/data/scaledoc/query.json"
+    queries = load_queries("pubmed", query_file)
     assert len(queries) == 26
     assert queries[0]["q_id"] == "0"
     assert "query" in queries[0]
     assert queries[20]["q_id"] == "0_ext"
     assert queries[25]["q_id"] == "5_ext"
 
-    bp_queries = load_scaledoc_queries("big_patent")
+    bp_queries = load_queries("big_patent", query_file)
     assert len(bp_queries) == 25
     assert bp_queries[0]["q_id"] == "0"
     assert bp_queries[20]["q_id"] == "0_ext"
     assert bp_queries[24]["q_id"] == "4_ext"
 
-    gr_queries = load_scaledoc_queries("gov_report")
+    gr_queries = load_queries("gov_report", query_file)
     assert len(gr_queries) == 20
     assert gr_queries[0]["q_id"] == "0"
     assert gr_queries[19]["q_id"] == "19"
@@ -272,33 +276,138 @@ def test_scaledoc_scenario_and_tabular_dataset(tmp_path):
     )
     save_dataset(ds, data_file, format="parquet")
 
-    scenario = ScaleDocPubMed(query_id="0", data_path=data_file)
+    scenario = TabularDataset(name="scaledoc_pubmed_q0_test", data_path=data_file)
     scores, labels = scenario.generate_population()
 
     assert np.allclose(scores, [0.9, 0.1, 0.8, 0.2])
     assert np.array_equal(labels, [True, False, True, False])
 
-    # Dynamic registry lookup test
-    assert "scaledoc_pubmed_q0" in SCENARIOS
-    assert "scaledoc_pubmed_q12" in SCENARIOS
-    assert "scaledoc_big_patent_q3_ext" in SCENARIOS
-    assert "invalid_scenario" not in SCENARIOS
+    # get_scenario lookup tests
+    sc_pub = get_scenario("pubmed", query_id="0")
+    assert isinstance(sc_pub, DocumentBenchmarkDataset)
+    assert sc_pub.name == "pubmed"
+    assert sc_pub.query_id == "0"
+    assert sc_pub.dataset_group == "scaledoc"
 
-    dynamic_sc = SCENARIOS["scaledoc_pubmed_q0"]
-    assert isinstance(dynamic_sc, ScaleDocDataset)
-    assert dynamic_sc.dataset_name == "pubmed"
-    assert dynamic_sc.query_id == "0"
+    sc_gov5 = get_scenario("gov_report", query_id="5")
+    assert isinstance(sc_gov5, DocumentBenchmarkDataset)
+    assert sc_gov5.name == "gov_report"
+    assert sc_gov5.query_id == "5"
+    assert sc_gov5.dataset_group == "scaledoc"
 
-    dynamic_sc5 = SCENARIOS["scaledoc_gov_report_q5"]
-    assert isinstance(dynamic_sc5, ScaleDocDataset)
-    assert dynamic_sc5.dataset_name == "gov_report"
-    assert dynamic_sc5.query_id == "5"
-
-    sc12 = SCENARIOS.get("scaledoc_pubmed_q12")
-    assert sc12 is not None
-    assert sc12.name == "scaledoc_pubmed_q12"
+    sc12 = get_scenario("scaledoc_pubmed", query_id="12")
+    assert sc12.name == "pubmed"
     assert sc12.query_id == "12"
-    assert SCENARIOS.get("invalid_scenario") is None
+
+    with pytest.raises(ValueError, match="Unknown scenario 'invalid_scenario'"):
+        get_scenario("invalid_scenario")
+
+    # BARGAIN lookup test
+    sc_court = get_scenario("court")
+    assert isinstance(sc_court, DocumentBenchmarkDataset)
+    assert sc_court.name == "court"
+    assert sc_court.dataset_group == "bargain"
+    assert sc_court.query_id == "0"
+    assert str(sc_court.data_path).endswith(
+        "experiments/data/bargain/court/documents.parquet"
+    )
+
+    sc_rev = get_scenario("review")
+    assert isinstance(sc_rev, DocumentBenchmarkDataset)
+    assert sc_rev.name == "review"
+    assert sc_rev.dataset_group == "bargain"
+    assert str(sc_rev.data_path).endswith(
+        "experiments/data/bargain/review/documents.parquet"
+    )
+
+    sc_sp = get_scenario("screenplay")
+    assert isinstance(sc_sp, DocumentBenchmarkDataset)
+    assert sc_sp.name == "screenplay"
+    assert sc_sp.dataset_group == "bargain"
+
+    sc_wiki = get_scenario("wiki")
+    assert isinstance(sc_wiki, DocumentBenchmarkDataset)
+    assert sc_wiki.name == "wiki"
+    assert sc_wiki.dataset_group == "bargain"
+
+    # Unknown dataset error test
+    with pytest.raises(
+        ValueError, match="Unknown benchmark dataset name 'nonexistent_dataset'"
+    ):
+        DocumentBenchmarkDataset(name="nonexistent_dataset")
+
+
+def test_get_scenario_varying_models_and_kwargs(tmp_path):
+    # Lookup with custom oracle and proxy models
+    custom_sc = get_scenario(
+        "court",
+        query_id="0",
+        oracle_model="azure/gpt-5.4",
+        proxy_model="azure/gpt-4o-mini",
+    )
+    assert custom_sc.oracle_model == "azure/gpt-5.4"
+    assert custom_sc.proxy_model == "azure/gpt-4o-mini"
+    assert str(custom_sc.oracle_path).endswith(
+        "experiments/data/bargain/court/oracle/q0/azure-gpt-5.4.parquet"
+    )
+    assert str(custom_sc.proxy_path).endswith(
+        "experiments/data/bargain/court/proxy/q0/azure-gpt-4o-mini.parquet"
+    )
+
+    # Config hash reflects varied models
+    default_sc = get_scenario("court")
+    assert custom_sc.config_hash() != default_sc.config_hash()
+
+    # Forwarding kwargs (e.g. data_path, pop_size)
+    custom_parquet = tmp_path / "custom.parquet"
+    custom_kw_sc = get_scenario("court", data_path=custom_parquet, pop_size=500)
+    assert custom_kw_sc.data_path == custom_parquet
+    assert custom_kw_sc.pop_size == 500
+
+    # SUPG forwarding kwargs (supports 'onto' and prefix 'supg_onto')
+    supg_sc = get_scenario("onto", pop_size=123)
+    assert supg_sc.pop_size == 123
+    assert supg_sc.name == "onto"
+    supg_sc_prefixed = get_scenario("supg_onto", pop_size=123)
+    assert supg_sc_prefixed.pop_size == 123
+
+    # Synthetic forwarding kwargs
+    synth_sc = get_scenario("benign", pop_size=777)
+    assert synth_sc.pop_size == 777
+
+    # list_scenarios verification (all prefixes omitted consistently)
+    all_scenarios = list_scenarios()
+    assert "court" in all_scenarios
+    assert "pubmed" in all_scenarios
+    assert "onto" in all_scenarios
+    assert "supg_onto" not in all_scenarios
+    assert "benign" in all_scenarios
+
+
+def test_get_available_queries_and_parse_query_args(tmp_path):
+    # Test parse_query_args helper
+    assert parse_query_args(None) == []
+    assert parse_query_args(["0"]) == ["0"]
+    assert parse_query_args(["0", "1", "2"]) == ["0", "1", "2"]
+    assert parse_query_args(["0,1,2"]) == ["0", "1", "2"]
+    assert parse_query_args(["0, 1", "2"]) == ["0", "1", "2"]
+
+    # Test get_available_queries for non-benchmark datasets
+    assert get_available_queries("onto") == []
+    assert get_available_queries("supg_onto") == []
+    assert get_available_queries("benign") == []
+
+    # Test get_available_queries for BARGAIN court
+    court_queries = get_available_queries("court")
+    assert court_queries == ["0"]
+
+    # Test get_available_queries on a mock directory structure with custom data_dir
+    mock_pubmed = tmp_path / "pubmed"
+    (mock_pubmed / "oracle" / "q0").mkdir(parents=True)
+    (mock_pubmed / "oracle" / "q5").mkdir(parents=True)
+    (mock_pubmed / "oracle" / "q12").mkdir(parents=True)
+    found = get_available_queries("pubmed", data_dir=tmp_path)
+    assert found == ["0", "5", "12"]
 
 
 def test_read_dataframe_hf_disk(tmp_path):
@@ -357,6 +466,59 @@ def test_loaders_pass_cache_dir():
         load_bigpatent_documents(n=1, cache_dir="/custom/cache/dir")
         assert mock_load.call_args[1]["cache_dir"] == "/custom/cache/dir"
 
+
+def test_load_bargain_kaggle_documents(tmp_path):
+    screenplay_dir = tmp_path / "screenplay_data" / "data" / "raw_texts" / "raw_texts"
+    screenplay_dir.mkdir(parents=True)
+    (screenplay_dir / "B.txt").write_text("Second screenplay", encoding="utf-8")
+    (screenplay_dir / "A.txt").write_text("First screenplay", encoding="utf-8")
+    (tmp_path / "steam_reviews.csv").write_text(
+        "review,other\nGreat game,1\n,2\nNeeds work,3\n",
+        encoding="utf-8",
+    )
+
+    with patch(
+        "experiments.data_prep.loaders._download_kaggle_dataset",
+        return_value=tmp_path,
+    ):
+        screenplays = load_screenplay_documents(
+            n=1, seed=42, cache_dir=tmp_path / "cache"
+        )
+        reviews = load_review_documents(n=10, seed=42, cache_dir=tmp_path / "cache")
+
+    assert len(screenplays["content"]) == 1
+    assert screenplays["content"][0] in ("First screenplay", "Second screenplay")
+    assert set(reviews["content"]) == {"Great game", "Needs work"}
+
+
+def test_get_base_documents_reuses_short_cache(tmp_path):
+    from experiments.prepare_data import get_base_documents
+
+    cache_file = tmp_path / "documents.parquet"
+    save_dataset(
+        Dataset.from_dict(
+            {
+                "id": [0, 1],
+                "content": ["first", "second"],
+            }
+        ),
+        cache_file,
+        format="parquet",
+    )
+
+    with patch("experiments.prepare_data.load_screenplay_documents") as mock_loader:
+        dataset = get_base_documents(
+            dataset_name="screenplay",
+            split="train",
+            num_docs=10000,
+            output_dir=tmp_path,
+            cache_dir=tmp_path / "cache",
+        )
+
+    mock_loader.assert_not_called()
+    assert dataset["content"] == ["first", "second"]
+
+
 def test_load_court_documents(tmp_path):
     opinions_file = tmp_path / "opinions.csv"
     opinions_file.write_text(
@@ -384,7 +546,7 @@ def test_dotenv_loading(tmp_path):
         assert os.environ.get("AZURE_API_KEY") == "super-secret-key"
 
 
-def test_load_scaledoc_queries_url(tmp_path):
+def test_load_queries_url(tmp_path):
     mock_json = json.dumps(
         {"custom_ds": [{"q_id": 0, "query": "Custom query?"}]}
     ).encode("utf-8")
@@ -395,21 +557,18 @@ def test_load_scaledoc_queries_url(tmp_path):
 
     with patch("urllib.request.urlopen", return_value=mock_resp):
         # Test loading from explicit URL
-        queries = load_scaledoc_queries(
+        queries = load_queries(
             "custom_ds",
             query_file="https://example.com/query.json",
         )
         assert len(queries) == 1
         assert queries[0]["query"] == "Custom query?"
 
-        # Test downloading to custom cache_dir when default does not exist
-        queries2 = load_scaledoc_queries(
-            "custom_ds",
-            cache_dir=tmp_path / "cache",
-        )
+        query_file = tmp_path / "queries.json"
+        query_file.write_bytes(mock_json)
+        queries2 = load_queries("custom_ds", query_file=query_file)
         assert len(queries2) == 1
         assert queries2[0]["q_id"] == "0"
-        assert (tmp_path / "cache" / "query.json").exists()
 
 
 def test_config_yaml_custom_rates_and_oracle(tmp_path):
@@ -514,7 +673,7 @@ def test_oracle_router_acompletion_call(tmp_path):
 
 
 def test_multi_phase_workflow_and_reuse(tmp_path):
-    from experiments.prepare_scaledoc_data import load_query_dataset
+    from experiments.prepare_data import load_query_dataset
 
     base_ds = Dataset.from_dict(
         {
@@ -598,7 +757,8 @@ def test_multi_phase_workflow_and_reuse(tmp_path):
 
 
 def test_create_execution_plan_and_summary(tmp_path):
-    from experiments.prepare_scaledoc_data import create_execution_plan
+    from experiments.model_paths import oracle_output_path, proxy_output_path
+    from experiments.prepare_data import create_execution_plan
 
     base_ds = Dataset.from_dict(
         {
@@ -607,28 +767,27 @@ def test_create_execution_plan_and_summary(tmp_path):
         }
     )
 
-    # Prepare q0.parquet with label already present
-    q0_file = tmp_path / "q0.parquet"
-    ds_q0 = Dataset.from_dict(
-        {
-            "id": ["d1", "d2"],
-            "content": ["Text 1", "Text 2"],
-            "label": [True, False],
-        }
+    # Prepare cached oracle output for query 0 (label present)
+    ds_oracle_q0 = Dataset.from_dict({"label": [True, False]})
+    save_dataset(
+        ds_oracle_q0,
+        oracle_output_path(tmp_path, "0", "test-oracle"),
+        format="parquet",
     )
-    save_dataset(ds_q0, q0_file, format="parquet")
 
-    # Prepare q1.parquet with both label and proxy_score present
-    q1_file = tmp_path / "q1.parquet"
-    ds_q1 = Dataset.from_dict(
-        {
-            "id": ["d1", "d2"],
-            "content": ["Text 1", "Text 2"],
-            "label": [True, True],
-            "proxy_score": [0.9, 0.8],
-        }
+    # Prepare cached oracle and proxy output for query 1 (both present)
+    ds_oracle_q1 = Dataset.from_dict({"label": [True, True]})
+    save_dataset(
+        ds_oracle_q1,
+        oracle_output_path(tmp_path, "1", "test-oracle"),
+        format="parquet",
     )
-    save_dataset(ds_q1, q1_file, format="parquet")
+    ds_proxy_q1 = Dataset.from_dict({"proxy_score": [0.9, 0.8]})
+    save_dataset(
+        ds_proxy_q1,
+        proxy_output_path(tmp_path, "1", "test-proxy"),
+        format="parquet",
+    )
 
     # q2 does not exist yet
 
@@ -666,6 +825,8 @@ def test_create_execution_plan_and_summary(tmp_path):
         base_docs=base_ds,
         output_dir=tmp_path,
         output_format="parquet",
+        oracle_model="test-oracle",
+        proxy_model="test-proxy",
         oracle=mock_oracle,
         proxy=mock_proxy,
         force=False,
@@ -757,7 +918,7 @@ def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
     )
     save_dataset(ds, q_file, format="parquet")
 
-    sc = ScaleDocPubMed(query_id="0", data_path=q_file)
+    sc = TabularDataset(name="test_tabular", data_path=q_file)
     df = sc.get_dataframe()
     assert len(df) == 3
     assert "oracle_cost" in df.columns
@@ -776,7 +937,8 @@ def test_tabular_dataset_get_costs_and_dataframe(tmp_path):
 
 
 def test_create_execution_plan_with_ext_queries(tmp_path):
-    from experiments.prepare_scaledoc_data import create_execution_plan
+    from experiments.model_paths import oracle_output_path
+    from experiments.prepare_data import create_execution_plan
 
     base_ds = Dataset.from_dict(
         {
@@ -785,16 +947,13 @@ def test_create_execution_plan_with_ext_queries(tmp_path):
         }
     )
 
-    # Pre-populate q0_ext.parquet with label
-    q0_ext_file = tmp_path / "q0_ext.parquet"
-    ds_ext = Dataset.from_dict(
-        {
-            "id": ["d1", "d2"],
-            "content": ["Text 1", "Text 2"],
-            "label": [True, False],
-        }
+    # Pre-populate cached oracle output for query 0_ext
+    ds_ext = Dataset.from_dict({"label": [True, False]})
+    save_dataset(
+        ds_ext,
+        oracle_output_path(tmp_path, "0_ext", "test-oracle"),
+        format="parquet",
     )
-    save_dataset(ds_ext, q0_ext_file, format="parquet")
 
     mock_oracle = MagicMock(spec=BaseOracle)
     mock_oracle.model = "test-oracle"
@@ -819,6 +978,8 @@ def test_create_execution_plan_with_ext_queries(tmp_path):
         base_docs=base_ds,
         output_dir=tmp_path,
         output_format="parquet",
+        oracle_model="test-oracle",
+        proxy_model=None,
         oracle=mock_oracle,
         proxy=None,
         force=False,
@@ -826,16 +987,20 @@ def test_create_execution_plan_with_ext_queries(tmp_path):
 
     assert len(plan.items) == 3
     assert plan.items[0].qid == "0"
-    assert plan.items[0].target_file == tmp_path / "q0.parquet"
+    assert plan.items[0].oracle_path == oracle_output_path(tmp_path, "0", "test-oracle")
     assert plan.items[0].needs_oracle is True
 
     assert plan.items[1].qid == "0_ext"
-    assert plan.items[1].target_file == tmp_path / "q0_ext.parquet"
+    assert plan.items[1].oracle_path == oracle_output_path(
+        tmp_path, "0_ext", "test-oracle"
+    )
     assert plan.items[1].has_label is True
     assert plan.items[1].needs_oracle is False
 
     assert plan.items[2].qid == "1_ext"
-    assert plan.items[2].target_file == tmp_path / "q1_ext.parquet"
+    assert plan.items[2].oracle_path == oracle_output_path(
+        tmp_path, "1_ext", "test-oracle"
+    )
     assert plan.items[2].needs_oracle is True
 
     summary = plan.summary()
@@ -845,21 +1010,22 @@ def test_create_execution_plan_with_ext_queries(tmp_path):
 
 
 def test_scenarios_registry_with_ext_queries():
-    # Test dynamic registration of extended query scenarios
-    sc_pub_ext = SCENARIOS["scaledoc_pubmed_q0_ext"]
-    assert sc_pub_ext.dataset_name == "pubmed"
+    # Test retrieval of extended query scenarios
+    sc_pub_ext = get_scenario("pubmed", query_id="0_ext")
+    assert sc_pub_ext.name == "pubmed"
     assert sc_pub_ext.query_id == "0_ext"
-    assert sc_pub_ext.name == "scaledoc_pubmed_q0_ext"
     assert str(sc_pub_ext.data_path).endswith(
-        "experiments/data/scaledoc/pubmed/q0_ext.parquet"
+        "experiments/data/scaledoc/pubmed/documents.parquet"
+    )
+    assert str(sc_pub_ext.oracle_path).endswith(
+        "experiments/data/scaledoc/pubmed/oracle/q0_ext/azure-gpt-5.6-terra.parquet"
     )
 
-    sc_bp_ext = SCENARIOS["scaledoc_big_patent_q4_ext"]
-    assert sc_bp_ext.dataset_name == "big_patent"
+    sc_bp_ext = get_scenario("big_patent", query_id="4_ext")
+    assert sc_bp_ext.name == "big_patent"
     assert sc_bp_ext.query_id == "4_ext"
-    assert sc_bp_ext.name == "scaledoc_big_patent_q4_ext"
     assert str(sc_bp_ext.data_path).endswith(
-        "experiments/data/scaledoc/big_patent/q4_ext.parquet"
+        "experiments/data/scaledoc/big_patent/documents.parquet"
     )
 
 
@@ -1127,7 +1293,7 @@ def test_litellm_temperature_passed_via_litellm_kwargs():
     import litellm
 
     oracle = LiteLLMOracle(
-        model="azure/gpt-4o",
+        model="azure/gpt-5.6-terra",
         litellm_kwargs={"temperature": 0.0},
     )
     mock_resp = MagicMock()
@@ -1149,7 +1315,7 @@ def test_litellm_temperature_passed_via_litellm_kwargs():
 def test_prepare_scaledoc_cli_temperature_arg():
     import sys
 
-    from experiments.prepare_scaledoc_data import parse_args
+    from experiments.prepare_data import parse_args
 
     test_args = [
         "prepare_scaledoc_data.py",
@@ -1186,8 +1352,10 @@ def test_content_policy_violation_fast_fail_and_none_label(tmp_path):
     assert _is_content_policy_violation(ValueError("General failure")) is False
 
     # 2. Test LiteLLMOracle fast-fail (call count is 1, not retried 5 times)
-    oracle = LiteLLMOracle(model="azure/gpt-4o", max_retries=5)
-    with patch.object(litellm, "acompletion", new_callable=AsyncMock) as mock_acompletion:
+    oracle = LiteLLMOracle(model="azure/gpt-5.6-terra", max_retries=5)
+    with patch.object(
+        litellm, "acompletion", new_callable=AsyncMock
+    ) as mock_acompletion:
         mock_acompletion.side_effect = mock_exc
         out = oracle.predict(["sensitive medical document"], "question?")
         assert mock_acompletion.call_count == 1  # Fast-fail without 5 retries
@@ -1198,7 +1366,9 @@ def test_content_policy_violation_fast_fail_and_none_label(tmp_path):
 
     # 3. Test LiteLLMProxy fast-fail
     proxy = LiteLLMProxy(model="openai/test", max_retries=5)
-    with patch.object(litellm, "acompletion", new_callable=AsyncMock) as mock_acompletion:
+    with patch.object(
+        litellm, "acompletion", new_callable=AsyncMock
+    ) as mock_acompletion:
         mock_acompletion.side_effect = mock_exc
         scores, costs = proxy.score(["sensitive medical document"], "question?")
         assert mock_acompletion.call_count == 1
@@ -1206,14 +1376,17 @@ def test_content_policy_violation_fast_fail_and_none_label(tmp_path):
         assert costs[0]["filtered"] is True
 
     # 4. Test dataset & checkpoint preservation with None values
-    ds = Dataset.from_dict({
-        "id": [1, 2],
-        "content": ["normal text", "blocked text"],
-    })
+    ds = Dataset.from_dict(
+        {
+            "id": [1, 2],
+            "content": ["normal text", "blocked text"],
+        }
+    )
     cp_path = tmp_path / "test_cp.json"
 
     # Mock oracle returning True for item 1, and None for item 2
     from experiments.data_prep.models import BaseOracle, OracleOutput
+
     mock_oracle = MagicMock(spec=BaseOracle)
     mock_oracle.predict.return_value = OracleOutput(
         labels=[True, None],
@@ -1253,22 +1426,27 @@ def test_create_execution_plan_subtracts_checkpointed_items(tmp_path):
     import json
 
     from experiments.data_prep.models import BaseOracle, CostEstimate
-    from experiments.prepare_scaledoc_data import create_execution_plan
+    from experiments.model_paths import oracle_checkpoint_path
+    from experiments.prepare_data import create_execution_plan
 
-    base_ds = Dataset.from_dict({
-        "id": ["d1", "d2", "d3", "d4"],
-        "content": ["text 1", "text 2", "text 3", "text 4"],
-    })
+    base_ds = Dataset.from_dict(
+        {
+            "id": ["d1", "d2", "d3", "d4"],
+            "content": ["text 1", "text 2", "text 3", "text 4"],
+        }
+    )
 
-    checkpoints_dir = tmp_path / "checkpoints"
-    checkpoints_dir.mkdir(parents=True)
     # Checkpoint with indices 0 and 1 completed (2 out of 4)
-    cp_q0 = checkpoints_dir / "q0_oracle.json"
+    cp_q0 = oracle_checkpoint_path(tmp_path, "0", "test-oracle")
+    cp_q0.parent.mkdir(parents=True)
     with open(cp_q0, "w", encoding="utf-8") as f:
-        json.dump({
-            "0": {"value": True, "aux": 0.9, "cost": {}},
-            "1": {"value": False, "aux": 0.1, "cost": {}},
-        }, f)
+        json.dump(
+            {
+                "0": {"value": True, "aux": 0.9, "cost": {}},
+                "1": {"value": False, "aux": 0.1, "cost": {}},
+            },
+            f,
+        )
 
     mock_oracle = MagicMock(spec=BaseOracle)
     mock_oracle.model = "test-oracle"
@@ -1292,6 +1470,8 @@ def test_create_execution_plan_subtracts_checkpointed_items(tmp_path):
         base_docs=base_ds,
         output_dir=tmp_path,
         output_format="parquet",
+        oracle_model="test-oracle",
+        proxy_model=None,
         oracle=mock_oracle,
         proxy=None,
         force=False,
@@ -1313,7 +1493,46 @@ def test_litellm_disables_aiohttp_transport():
     import litellm
 
     import experiments.data_prep.models  # noqa: F401
+
     assert litellm.disable_aiohttp_transport is True
+
+
+def test_azure_gpt_5_6_logprobs_support_patched():
+    import litellm
+    from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
+
+    import experiments.data_prep.models  # noqa: F401
+
+    cfg = AzureOpenAIGPT5Config()
+    model = "azure/gpt-5.6-terra"
+
+    # Verify is_model_gpt_5_2_model recognizes gpt-5.6
+    assert cfg.is_model_gpt_5_2_model(model) is True
+
+    # Verify get_supported_openai_params retains logprobs and top_logprobs
+    supported = cfg.get_supported_openai_params(model)
+    assert "logprobs" in supported
+    assert "top_logprobs" in supported
+
+    # Verify that litellm top-level also sees logprobs for this model
+    litellm_supported = litellm.get_supported_openai_params(model)
+    assert litellm_supported is not None
+    assert "logprobs" in litellm_supported
+
+    # Verify map_openai_params preserves logprobs with reasoning_effort='none'
+    mapped = cfg.map_openai_params(
+        non_default_params={
+            "reasoning_effort": "none",
+            "logprobs": True,
+            "top_logprobs": 20,
+        },
+        optional_params={},
+        model=model,
+        drop_params=True,
+    )
+    assert mapped.get("reasoning_effort") == "none"
+    assert mapped.get("logprobs") is True
+    assert mapped.get("top_logprobs") == 20
 
 
 def test_load_court_documents_random_sampling(tmp_path):

@@ -55,9 +55,7 @@ try:
 except Exception:
     pass
 
-ConfigType = (
-    str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
-)
+ConfigType = str | Path | dict[str, Any] | list[dict[str, Any]] | litellm.Router | None
 
 
 @dataclass
@@ -118,9 +116,7 @@ class BaseOracle(ABC):
     """Abstract base class for ground-truth oracle models."""
 
     @abstractmethod
-    def predict(
-        self, items: list[Any], query: Any
-    ) -> OracleOutput:
+    def predict(self, items: list[Any], query: Any) -> OracleOutput:
         """
         Predicts binary boolean labels, continuous confidence scores, and per-item
         costs.
@@ -163,11 +159,7 @@ def _parse_callable_output(
     default_cost: dict[str, Any],
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Parses return value from callable into (typed_values, cost_dicts)."""
-    if (
-        isinstance(res, tuple)
-        and len(res) == 2
-        and isinstance(res[1], (list, tuple))
-    ):
+    if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], (list, tuple)):
         values, costs = res
         return [cast_fn(x) for x in values], list(costs)
     values = [cast_fn(x) for x in res]
@@ -185,9 +177,7 @@ class CallableOracle(BaseOracle):
         self.func = func
         self.default_cost = default_cost.copy() if default_cost is not None else {}
 
-    def predict(
-        self, items: list[Any], query: Any
-    ) -> OracleOutput:
+    def predict(self, items: list[Any], query: Any) -> OracleOutput:
         res = self.func(items, query)
         if isinstance(res, OracleOutput):
             return res
@@ -224,9 +214,7 @@ class CallableProxy(BaseProxy):
     def score(
         self, items: list[Any], query: Any
     ) -> tuple[list[float], list[dict[str, Any]]]:
-        return _parse_callable_output(
-            self.func(items, query), float, self.default_cost
-        )
+        return _parse_callable_output(self.func(items, query), float, self.default_cost)
 
 
 DEFAULT_SCALEDOC_SYSTEM_PROMPT = (
@@ -566,14 +554,10 @@ class BaseLiteLLMModel:
                 try:
                     if self.router is not None:
                         return await self.router.acompletion(
-                            model=self.model,
-                            messages=messages,
-                            **kwargs
+                            model=self.model, messages=messages, **kwargs
                         )
                     return await litellm.acompletion(
-                        model=self.model,
-                        messages=messages,
-                        **kwargs
+                        model=self.model, messages=messages, **kwargs
                     )
                 except Exception as exc:
                     if _is_content_policy_violation(exc):
@@ -597,9 +581,7 @@ class BaseLiteLLMModel:
         return await asyncio.gather(*tasks)
 
 
-def _extract_litellm_cost_metrics(
-    response: Any, model: str
-) -> dict[str, Any]:
+def _extract_litellm_cost_metrics(response: Any, model: str) -> dict[str, Any]:
     """Extracts token counts and monetary cost from a LiteLLM ModelResponse."""
     usage = getattr(response, "usage", None)
     prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -646,16 +628,8 @@ def _extract_litellm_binary_probability(
             first_token_lp = content_logprobs[0]
             top_logprobs = getattr(first_token_lp, "top_logprobs", [])
             for entry in top_logprobs:
-                tok = (
-                    entry.token.strip().lower()
-                    if hasattr(entry, "token")
-                    else ""
-                )
-                lp = (
-                    entry.logprob
-                    if hasattr(entry, "logprob")
-                    else -99.0
-                )
+                tok = entry.token.strip().lower() if hasattr(entry, "token") else ""
+                lp = entry.logprob if hasattr(entry, "logprob") else -99.0
                 if tok == pos_target:
                     pos_logprobs.append(lp)
                 elif tok == neg_target:
@@ -745,26 +719,26 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
                 f"Warning: Item rejected by content management policy. Setting label "
                 f"to None. Details: {cpe}"
             )
-            return None, None, {
-                "filtered": True,
-                "error": str(cpe),
-                "monetary": 0.0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-            }
+            return (
+                None,
+                None,
+                {
+                    "filtered": True,
+                    "error": str(cpe),
+                    "monetary": 0.0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+            )
 
-    async def apredict(
-        self, items: list[Any], query: Any
-    ) -> OracleOutput:
+    async def apredict(self, items: list[Any], query: Any) -> OracleOutput:
         results = await self._batch_call(items, query, self._call_single)
         labels = [r[0] for r in results]
         scores = [r[1] for r in results]
         costs = [r[2] for r in results]
         return OracleOutput(labels=labels, scores=scores, costs=costs)
 
-    def predict(
-        self, items: list[Any], query: Any
-    ) -> OracleOutput:
+    def predict(self, items: list[Any], query: Any) -> OracleOutput:
         return asyncio.run(self.apredict(items, query))
 
 

@@ -7,13 +7,14 @@ Key evaluation dimensions:
 2. Oracle call efficiency: total oracle call rate across the population dataset.
 """
 
-import json
+import re
 import sys
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from experiments.data_prep import DATASET_GROUPS
 from experiments.runners import (
     ACTISRunner,
     BargainPRRunner,
@@ -23,7 +24,20 @@ from experiments.runners import (
     print_comparison_table,
     run_evaluation_suite,
 )
-from experiments.scenarios import SCENARIOS
+from experiments.scenarios import get_available_queries, get_scenario
+
+
+def parse_query_args(raw_queries: list[str] | None) -> list[str]:
+    """Flattens comma- or space-delimited query arguments."""
+    if not raw_queries:
+        return []
+    result = []
+    for item in raw_queries:
+        for part in item.split(","):
+            part = part.strip()
+            if part:
+                result.append(part)
+    return result
 
 
 def parse_sample_size_or_fraction(val: str) -> int | float:
@@ -81,12 +95,34 @@ def parse_args():
     parser = ArgumentParser(description="Compare LOTUS vs BARGAIN (unconstrained).")
     parser.add_argument(
         "--scenario",
-        "--scenarios",
-        dest="scenarios",
+        type=str,
+        required=True,
+        help="Scenario identifier or benchmark dataset name to run "
+        "(e.g. 'court', 'pubmed', 'onto', 'benign').",
+    )
+    parser.add_argument(
+        "--query",
+        "--queries",
+        dest="queries",
         nargs="+",
-        default=["all"],
-        help=f"Scenario(s) to run: 'all' or subset of {list(SCENARIOS.keys())} "
-        f"(space or comma-separated, default: all)",
+        default=None,
+        help=(
+            "Query identifier(s) for document benchmark datasets (e.g. '--query 0', "
+            "'--query 0 1 2', '--queries 0,1,2', or '--query all'). Default: '0'."
+        ),
+    )
+    parser.add_argument(
+        "--oracle-model",
+        type=str,
+        default="azure/gpt-5.6-terra",
+        help="Model identifier for oracle ground truth (default: "
+        "'azure/gpt-5.6-terra')",
+    )
+    parser.add_argument(
+        "--proxy-model",
+        type=str,
+        default="azure/gpt-5.6-luna",
+        help="Model identifier for proxy score (default: 'azure/gpt-5.6-luna')",
     )
     parser.add_argument(
         "--num-trials",
@@ -151,12 +187,6 @@ def parse_args():
         default=0.5,
         help="Maximum sample size for ACTIS: integer count (e.g. 10000) or float "
         "fraction in (0, 1] (default: 0.5).",
-    )
-    parser.add_argument(
-        "--exp-name", type=str, default="comparison", help="Experiment name"
-    )
-    parser.add_argument(
-        "--output-json", type=str, default=None, help="Output JSON path"
     )
     parser.add_argument(
         "--alpha",
@@ -256,28 +286,47 @@ def parse_args():
 def main():
     args, parser = parse_args()
 
-    # Normalize scenario names (supports multiple args and comma-separated items)
-    scenario_keys: list[str] = []
-    for item in args.scenarios:
-        for sc in item.split(","):
-            sc_clean = sc.strip()
-            if not sc_clean:
-                continue
-            if sc_clean != "all" and sc_clean not in SCENARIOS:
-                valid = ", ".join(["all"] + list(SCENARIOS.keys()))
-                parser.error(
-                    f"invalid scenario '{sc_clean}'. Choose from: {valid}, or "
-                    "dynamic ScaleDoc queries "
-                    "(e.g. 'scaledoc_pubmed_q1', 'scaledoc_pubmed_q0_ext')"
-                )
-            scenario_keys.append(sc_clean)
+    clean_scenario = args.scenario.lower().strip()
+    match = re.match(r"^(?:(?:supg|scaledoc|bargain)_)?([a-z0-9_]+)$", clean_scenario)
+    base_name = match.group(1) if match else clean_scenario
+    is_benchmark = base_name in DATASET_GROUPS
 
-    if "all" in scenario_keys:
-        scenarios_to_run = list(dict.fromkeys(SCENARIOS.values()))
+    parsed_queries = parse_query_args(args.queries)
+
+    if not is_benchmark:
+        if parsed_queries:
+            parser.error(f"Scenario '{args.scenario}' does not support queries.")
+        try:
+            scenario = get_scenario(
+                args.scenario,
+                oracle_model=args.oracle_model,
+                proxy_model=args.proxy_model,
+            )
+        except ValueError as e:
+            parser.error(str(e))
+        scenarios_to_run = [scenario]
     else:
-        scenarios_to_run = [SCENARIOS[k] for k in dict.fromkeys(scenario_keys)]
+        if not parsed_queries:
+            query_ids = ["0"]
+        elif any(q.lower() == "all" for q in parsed_queries):
+            query_ids = get_available_queries(args.scenario)
+            if not query_ids:
+                parser.error(f"No queries found for benchmark '{args.scenario}'.")
+        else:
+            query_ids = parsed_queries
 
-    all_records = []
+        scenarios_to_run = []
+        for qid in query_ids:
+            try:
+                scenario = get_scenario(
+                    args.scenario,
+                    query_id=qid,
+                    oracle_model=args.oracle_model,
+                    proxy_model=args.proxy_model,
+                )
+                scenarios_to_run.append(scenario)
+            except ValueError as e:
+                parser.error(str(e))
 
     runners: list[BaseFilterRunner] = [
         # ACTISRunner(
@@ -379,26 +428,11 @@ def main():
             gamma_P=args.target_precision,
             delta=args.delta,
             seed=args.seed,
-            exp_name=args.exp_name,
             include_raw=args.include_raw,
             results_dir=args.results_dir,
             skip_existing=args.skip_existing and not args.force,
         )
         print_comparison_table(suite_res)
-        all_records.extend(suite_res)
-
-    output_path = args.output_json
-    if not output_path:
-        res_dir = Path(args.results_dir) / args.exp_name
-        json_name = f"comparison_delta_{args.delta}_gamma_{args.target_recall}.json"
-        output_path = res_dir / json_name
-    else:
-        output_path = Path(output_path)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(all_records, f, indent=2)
-    print(f"\nSaved comparison results to: {output_path}")
 
 
 if __name__ == "__main__":

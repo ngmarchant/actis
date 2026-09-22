@@ -32,7 +32,7 @@ from lotus.sem_ops.cascade_utils import (
     learn_cascade_thresholds,
 )
 from lotus.types import CascadeArgs
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from actis import ACTIS, ProposalMethod, compute_pr_proposal
 from actis.sampler import PopulationSampler
@@ -792,7 +792,6 @@ def summarize_runner_trials(
     runner: BaseFilterRunner,
     results: list[TrialResult],
     scenario: BaseScenario,
-    exp_name: str,
     gamma_R: float,
     gamma_P: float,
     delta: float,
@@ -806,7 +805,8 @@ def summarize_runner_trials(
     prec_fail = prec_arr < gamma_P
     joint_fail = rec_fail | prec_fail
 
-    def metric_dict(vals: FloatArray, include_raw: bool) -> dict[str, Any]:
+    def metric_dict(vals: ArrayLike, include_raw: bool) -> dict[str, Any]:
+        vals = np.asarray(vals)
         d = {
             "mean": float(np.mean(vals)),
             "median": float(np.median(vals)),
@@ -828,9 +828,9 @@ def summarize_runner_trials(
         "gamma_R": gamma_R,
         "gamma_P": gamma_P,
         "promised_delta": delta,
-        "joint_failure_rate": float(np.mean(joint_fail)),
-        "recall_failure_rate": float(np.mean(rec_fail)),
-        "precision_failure_rate": float(np.mean(prec_fail)),
+        "joint_failure": metric_dict(joint_fail, include_raw),
+        "recall_failure": metric_dict(rec_fail, include_raw),
+        "precision_failure": metric_dict(prec_fail, include_raw),
         "recall": metric_dict(rec_arr, include_raw),
         "precision": metric_dict(prec_arr, include_raw),
         "ideal_oracle_call_rate": float(ideal_oracle_rate),
@@ -851,9 +851,9 @@ def summarize_runner_trials(
     tau_poses = [r.tau_pos for r in results if r.tau_pos is not None]
     tau_negs = [r.tau_neg for r in results if r.tau_neg is not None]
     if tau_poses:
-        summary["tau_pos"] = metric_dict(np.array(tau_poses), False)
+        summary["tau_pos"] = metric_dict(tau_poses, False)
     if tau_negs:
-        summary["tau_neg"] = metric_dict(np.array(tau_negs), False)
+        summary["tau_neg"] = metric_dict(tau_negs, False)
 
     valid_flags = [
         r.is_asymptotically_valid
@@ -861,11 +861,11 @@ def summarize_runner_trials(
         if r.is_asymptotically_valid is not None
     ]
     if valid_flags:
-        summary["asymptotic_validity_rate"] = float(np.mean(valid_flags))
+        summary["asymptotic_validity"] = metric_dict(valid_flags, False)
 
     runtimes = [r.runtime for r in results if r.runtime is not None]
     if runtimes:
-        summary["runtime"] = metric_dict(np.array(runtimes), include_raw)
+        summary["runtime"] = metric_dict(runtimes, include_raw)
 
     return summary
 
@@ -879,7 +879,6 @@ def run_evaluation_suite(
     gamma_P: float,
     delta: float,
     seed: int,
-    exp_name: str = "comparative",
     include_raw: bool = True,
     results_dir: Path | str | None = None,
     skip_existing: bool = True,
@@ -905,10 +904,13 @@ def run_evaluation_suite(
 
     for runner in runners:
         if results_dir is not None:
+            subpath = (
+                scenario.results_subpath()
+                if hasattr(scenario, "results_subpath")
+                else Path(f"{scenario.name}_{scenario.config_hash()}")
+            )
             target_dir = (
-                Path(results_dir)
-                / f"{scenario.name}_{scenario.config_hash()}"
-                / f"{runner.name}_{runner.config_hash()}"
+                Path(results_dir) / subpath / f"{runner.name}_{runner.config_hash()}"
             )
             target_file = target_dir / filename
         else:
@@ -991,7 +993,6 @@ def run_evaluation_suite(
             runner=runner,
             results=runner_results[runner.name],
             scenario=scenario,
-            exp_name=exp_name,
             gamma_R=gamma_R,
             gamma_P=gamma_P,
             delta=delta,
@@ -1000,10 +1001,13 @@ def run_evaluation_suite(
             include_raw=include_raw,
         )
         if results_dir is not None:
+            subpath = (
+                scenario.results_subpath()
+                if hasattr(scenario, "results_subpath")
+                else Path(f"{scenario.name}_{scenario.config_hash()}")
+            )
             target_dir = (
-                Path(results_dir)
-                / f"{scenario.name}_{scenario.config_hash()}"
-                / f"{runner.name}_{runner.config_hash()}"
+                Path(results_dir) / subpath / f"{runner.name}_{runner.config_hash()}"
             )
             target_dir.mkdir(parents=True, exist_ok=True)
             target_file = target_dir / filename
@@ -1045,7 +1049,7 @@ def print_comparison_table(results: list[dict[str, Any]]) -> None:
     )
     print("-" * 90, flush=True)
     for r in results:
-        runner_info = r.get("runner") or r.get("runner_params", {})
+        runner_info = r.get("runner")
         runner_name = (
             runner_info.get("name", "unknown")
             if isinstance(runner_info, dict)
@@ -1057,9 +1061,9 @@ def print_comparison_table(results: list[dict[str, Any]]) -> None:
         print(
             fmt_row.format(
                 runner_name,
-                r["joint_failure_rate"],
-                r["recall_failure_rate"],
-                r["precision_failure_rate"],
+                r["joint_failure"]["mean"],
+                r["recall_failure"]["mean"],
+                r["precision_failure"]["mean"],
                 oracle_rate * 100,
             ),
             flush=True,

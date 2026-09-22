@@ -17,7 +17,7 @@ from experiments.runners import (
 from experiments.scenarios import (
     Benign,
     Population,
-    ScaleDocPubMed,
+    TabularDataset,
     compute_ideal_oracle_call_rate,
 )
 
@@ -230,7 +230,6 @@ def test_summarize_runner_trials_hierarchical_cost_and_include_raw():
         runner=runner,
         results=results,
         scenario=scenario,
-        exp_name="test_exp",
         gamma_R=0.9,
         gamma_P=0.9,
         delta=0.05,
@@ -259,7 +258,6 @@ def test_summarize_runner_trials_hierarchical_cost_and_include_raw():
         runner=runner,
         results=results,
         scenario=scenario,
-        exp_name="test_exp",
         gamma_R=0.9,
         gamma_P=0.9,
         delta=0.05,
@@ -297,7 +295,7 @@ def test_tabular_dataset_cost_parsing(tmp_path):
     )
     save_dataset(ds, data_file, format="parquet")
 
-    scenario = ScaleDocPubMed(query_id="0", data_path=data_file)
+    scenario = TabularDataset(name="test_tabular_costs", data_path=data_file)
     pop = scenario.generate_population()
 
     assert isinstance(pop, Population)

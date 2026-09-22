@@ -12,6 +12,11 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from experiments.data_prep import DATASET_GROUPS
+from experiments.model_paths import (
+    oracle_output_path,
+    proxy_output_path,
+    slugify_model_name,
+)
 
 
 @dataclass
@@ -182,6 +187,10 @@ class BaseScenario(ABC):
         d = self.to_dict()
         s = json.dumps(d, sort_keys=True, default=str)
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:length]
+
+    def results_subpath(self) -> Path:
+        """Returns the relative subdirectory path for storing results on disk."""
+        return Path(self.name) / f"{self.name}_{self.config_hash()}"
 
     @abstractmethod
     def generate_population(self, **kwargs) -> Population:
@@ -849,16 +858,26 @@ class TabularDataset(BaseScenario):
             return {}
 
         if isinstance(sample, dict):
-            cost_df = pd.DataFrame(series.tolist()).fillna(0.0)
-            return {
-                str(col): cost_df[col].to_numpy(dtype=np.float64)
-                for col in cost_df.columns
-            }
+            cost_df = pd.DataFrame(series.tolist())
+            extracted: dict[str, NDArray[np.float64]] = {}
+            for col in cost_df.columns:
+                num_series = pd.to_numeric(cost_df[col], errors="coerce")
+                # Skip columns that contain non-convertible string data
+                # (e.g. error messages)
+                if cost_df[col].dropna().apply(lambda x: not isinstance(x, str)).all():
+                    extracted[str(col)] = num_series.fillna(0.0).to_numpy(
+                        dtype=np.float64
+                    )
+            return extracted
         elif np.issubdtype(series.dtype, np.number):
             return {col_name: series.fillna(0.0).to_numpy(dtype=np.float64)}
         else:
             try:
-                arr = series.astype(float).fillna(0.0).to_numpy(dtype=np.float64)
+                arr = (
+                    pd.to_numeric(series, errors="coerce")
+                    .fillna(0.0)
+                    .to_numpy(dtype=np.float64)
+                )
                 return {col_name: arr}
             except Exception:
                 return {}
@@ -895,6 +914,10 @@ class TabularDataset(BaseScenario):
         """
         Loads and caches proxy scores, oracle labels, and cost metrics from the dataset.
 
+        Rows where the proxy score or oracle label is missing (e.g. because the
+        document triggered Azure's safety filter) are dropped before any subsampling
+        is applied. A warning is emitted listing the number of dropped rows.
+
         Returns:
             A Population object.
         """
@@ -910,6 +933,17 @@ class TabularDataset(BaseScenario):
                     f"Label column '{self.label_col}' not found in dataset columns: "
                     f"{df.columns.tolist()}"
                 )
+
+            missing_mask = df[self.score_col].isna() | df[self.label_col].isna()
+            n_missing = int(missing_mask.sum())
+            if n_missing > 0:
+                warnings.warn(
+                    f"Dropping {n_missing} row(s) from '{self.name}' with missing "
+                    f"proxy score or oracle label (e.g. due to safety-filter blocks). "
+                    f"{len(df) - n_missing} rows remain.",
+                    stacklevel=2,
+                )
+                df = df[~missing_mask].reset_index(drop=True)
 
             scores = df[self.score_col].to_numpy(dtype=np.float64)
             raw_label = df[self.label_col]
@@ -959,202 +993,260 @@ class TabularDataset(BaseScenario):
 FileDataset = TabularDataset
 
 
-@dataclass(kw_only=True)
-class SUPGOnto(TabularDataset):
-    """
-    SUPG Onto Benchmark Dataset
-
-    Real-world benchmark dataset from the SUPG paper with proxy scores and binary
-    ground-truth labels.
-    Contains N=11,165 tuples with ~2.5% positive prevalence.
-    """
-
-    name: str = "supg_onto"
-    description: str = "SUPG Onto benchmark dataset"
-    data_path: str | Path = "experiments/data/supg/onto/source.csv"
-
-
-@dataclass(kw_only=True)
-class SUPGImageNet(TabularDataset):
-    """
-    SUPG ImageNet Benchmark Dataset
-
-    Real-world benchmark dataset from the SUPG paper with proxy scores and binary
-    ground-truth labels.
-    Contains N=50,000 tuples with ~0.1% positive prevalence (50 positives).
-    """
-
-    name: str = "supg_imagenet"
-    description: str = "SUPG ImageNet benchmark dataset"
-    data_path: str | Path = "experiments/data/supg/imagenet/source.csv"
-
-
-SUPGImagenet = SUPGImageNet
+SUPG_DATASETS: dict[str, dict[str, Any]] = {
+    "onto": {
+        "description": "SUPG Onto benchmark dataset",
+        "data_path": "experiments/data/supg/onto/source.csv",
+    },
+    "imagenet": {
+        "description": "SUPG ImageNet benchmark dataset",
+        "data_path": "experiments/data/supg/imagenet/source.csv",
+    },
+    "jackson": {
+        "description": "SUPG Jackson benchmark dataset",
+        "data_path": "experiments/data/supg/jackson/2017-12-17.feather",
+    },
+    "tacred": {
+        "description": "SUPG TACRED benchmark dataset",
+        "data_path": "experiments/data/supg/tacred/source.csv",
+    },
+}
 
 
 @dataclass(kw_only=True)
-class SUPGJackson(TabularDataset):
+class DocumentBenchmarkDataset(TabularDataset):
     """
-    SUPG Jackson Benchmark Dataset
-
-    Real-world benchmark dataset from the SUPG paper with proxy scores and binary
-    ground-truth labels.
-    Contains N=973,085 tuples with ~29.2% positive prevalence.
-    """
-
-    name: str = "supg_jackson"
-    description: str = "SUPG Jackson benchmark dataset"
-    data_path: str | Path = "experiments/data/supg/jackson/2017-12-17.feather"
-
-
-@dataclass(kw_only=True)
-class SUPGTACRED(TabularDataset):
-    """
-    SUPG TACRED Benchmark Dataset
-
-    Real-world benchmark dataset from the SUPG paper with proxy scores and binary
-    ground-truth labels.
-    Contains N=22,631 tuples with ~2.4% positive prevalence.
-    """
-
-    name: str = "supg_tacred"
-    description: str = "SUPG TACRED benchmark dataset"
-    data_path: str | Path = "experiments/data/supg/tacred/source.csv"
-
-
-SUPGTacred = SUPGTACRED
-
-
-@dataclass(kw_only=True)
-class ScaleDocDataset(TabularDataset):
-    """
-    Scenario for ScaleDoc benchmark datasets (PubMed, BigPatent, GovReport).
+    Scenario for query-based document benchmark datasets (ScaleDoc, BARGAIN).
 
     Loads document content from `documents.parquet`, and joins ground-truth
     oracle labels and proxy scores from model-scoped cache files (default:
-    experiments/data/scaledoc/{dataset}/documents.parquet,
+    experiments/data/{dataset_group}/{dataset}/documents.parquet,
     .../oracle/q{query_id}/{oracle_model_slug}.parquet, and
     .../proxy/q{query_id}/{proxy_model_slug}.parquet).
     """
 
-    dataset_name: str = ""
     query_id: str = "0"
-    data_dir: str | Path = "experiments/data/scaledoc"
-    oracle_model: str = "azure/gpt-5.6-terra"
-    proxy_model: str = "azure/gpt-5.6-luna"
+    data_dir: str | Path | None = None
+    oracle_model: str | None = "azure/gpt-5.6-terra"
+    proxy_model: str | None = "azure/gpt-5.6-luna"
+
+    @property
+    def dataset_group(self) -> str:
+        clean_name = self.name.lower().replace("-", "_")
+        return DATASET_GROUPS.get(clean_name, "")
 
     def __post_init__(self):
-        clean_name = self.dataset_name.lower().replace("-", "_")
+        clean_name = self.name.lower().replace("-", "_")
+        if clean_name not in DATASET_GROUPS:
+            raise ValueError(
+                f"Unknown benchmark dataset name '{self.name}'. "
+                f"Must be one of: {sorted(DATASET_GROUPS.keys())}"
+            )
+
+        self.name = clean_name
+        group = DATASET_GROUPS[clean_name]
         clean_qid = str(self.query_id).lower()
-        if not self.name:
-            self.name = f"scaledoc_{clean_name}_q{clean_qid}"
+
         if not self.description:
-            self.description = f"ScaleDoc {clean_name} query {clean_qid}"
-        dataset_dir = Path(self.data_dir) / clean_name
+            group_display = "BARGAIN" if group == "bargain" else "ScaleDoc"
+            self.description = (
+                f"{group_display} {clean_name} (query {clean_qid}, "
+                f"oracle: {self.oracle_model}, proxy: {self.proxy_model})"
+            )
+
+        # Resolve directory paths
+        if self.data_dir is None:
+            resolved_data_dir = Path("experiments/data") / group
+        else:
+            resolved_data_dir = Path(self.data_dir)
+
+        dataset_dir = resolved_data_dir / clean_name
+
         if not self.data_path:
             self.data_path = dataset_dir / "documents.parquet"
-        if not self.oracle_path:
-            self.oracle_path = (
-                dataset_dir
-                / "oracle"
-                / f"q{clean_qid}"
-                / f"{slugify_model_name(self.oracle_model)}.parquet"
+        if not self.oracle_path and self.oracle_model:
+            self.oracle_path = oracle_output_path(
+                dataset_dir, clean_qid, self.oracle_model
             )
-        if not self.proxy_path:
-            self.proxy_path = (
-                dataset_dir
-                / "proxy"
-                / f"q{clean_qid}"
-                / f"{slugify_model_name(self.proxy_model)}.parquet"
+        if not self.proxy_path and self.proxy_model:
+            self.proxy_path = proxy_output_path(
+                dataset_dir, clean_qid, self.proxy_model
             )
         super().__post_init__()
 
-
-@dataclass(kw_only=True)
-class ScaleDocPubMed(ScaleDocDataset):
-    """ScaleDoc PubMed query benchmark scenario."""
-
-    dataset_name: str = "pubmed"
-
-
-@dataclass(kw_only=True)
-class ScaleDocBigPatent(ScaleDocDataset):
-    """ScaleDoc BigPatent query benchmark scenario."""
-
-    dataset_name: str = "big_patent"
+    def results_subpath(self) -> Path:
+        """Returns the relative subdirectory path for storing results on disk."""
+        oracle_slug = (
+            slugify_model_name(self.oracle_model) if self.oracle_model else "none"
+        )
+        proxy_slug = (
+            slugify_model_name(self.proxy_model) if self.proxy_model else "none"
+        )
+        model_pair = f"{oracle_slug}__{proxy_slug}_{self.config_hash()}"
+        return Path(self.name) / f"q{self.query_id}" / model_pair
 
 
-@dataclass(kw_only=True)
-class ScaleDocGovReport(ScaleDocDataset):
-    """ScaleDoc GovReport query benchmark scenario."""
-
-    dataset_name: str = "gov_report"
-
-
-class _ScenarioRegistry(dict):
+def get_scenario(
+    name: str,
+    *,
+    query_id: str | int | None = None,
+    oracle_model: str | None = None,
+    proxy_model: str | None = None,
+    **kwargs: Any,
+) -> BaseScenario:
     """
-    Scenario registry supporting static lookups and dynamic instantiation
-    for ScaleDoc query scenarios (e.g. 'scaledoc_pubmed_q1' or
-    'scaledoc_pubmed_q0_ext').
+    Look up or instantiate a scenario by name/dataset, query, and models.
+
+    Args:
+        name: Scenario name or benchmark dataset name.
+              - Synthetic: 'uninformative_proxy_floor', 'benign', etc.
+              - SUPG: 'onto', 'imagenet', 'jackson', 'tacred'
+                (or with optional 'supg_' prefix, e.g. 'supg_onto').
+              - Document benchmarks: 'court', 'review', 'screenplay', 'wiki' (BARGAIN)
+                or 'pubmed', 'big_patent', 'gov_report' (ScaleDoc).
+                Prefixes like 'bargain_' or 'scaledoc_' are also accepted.
+        query_id: Query identifier for document benchmarks (e.g. '0', '1', '12').
+                  Defaults to '0'. Ignored for synthetic and SUPG scenarios.
+        oracle_model: Model identifier for oracle ground truth
+                      (default: 'azure/gpt-5.6-terra'). Ignored for synthetic
+                      and SUPG scenarios.
+        proxy_model: Model identifier for proxy scores (default: 'azure/gpt-5.6-luna').
+                     Ignored for synthetic and SUPG scenarios.
+        **kwargs: Additional keyword arguments forwarded to the scenario dataclass
+                  constructor (e.g. pop_size, seed, data_path, data_dir).
+
+    Returns:
+        An instantiated BaseScenario object.
+
+    Raises:
+        ValueError: If name is not recognized.
     """
+    clean_name = name.lower().strip()
 
-    def _parse_dynamic_key(self, key: str) -> BaseScenario | None:
-        m = re.match(r"^scaledoc_(pubmed|big_patent|gov_report)_q(\d+(?:_ext)?)$", key)
-        if m:
-            ds_name, qid = m.group(1), m.group(2)
-            return ScaleDocDataset(dataset_name=ds_name, query_id=qid)
-        return None
-
-    def __contains__(self, key: object) -> bool:
-        if super().__contains__(key):
-            return True
-        if isinstance(key, str):
-            scenario = self._parse_dynamic_key(key)
-            if scenario is not None:
-                self[key] = scenario
-                return True
-        return False
-
-    def __missing__(self, key: object) -> BaseScenario:
-        if isinstance(key, str):
-            scenario = self._parse_dynamic_key(key)
-            if scenario is not None:
-                self[key] = scenario
-                return scenario
-        raise KeyError(f"Unknown scenario '{key}'")
-
-    def get(self, key: object, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-
-SCENARIOS = _ScenarioRegistry(
-    {
-        # Adversarial / Floor Stress Tests
-        "uninformative_proxy_floor": UninformativeProxyFloor(),
-        "precision_tail_overfit": PrecisionTailOverfit(),
-        "proxy_miscalibrated": ProxyMiscalibrated(),
-        "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin(),
-        "recall_boundary_critical_margin": RecallBoundaryCriticalMargin(),
-        "trapped_head": TrappedHead(),
-        # Semantic Database Operators / Workloads
-        "benign": Benign(),
-        "semantic_join_needle": SemanticJoinNeedle(),
-        "discrete_lexical_gate": DiscreteLexical(),
-        "power_law_tail_leakage": PowerLawTailLeakage(),
-        # Real Benchmarks (SUPG)
-        "supg_onto": SUPGOnto(),
-        "supg_imagenet": SUPGImageNet(),
-        "supg_jackson": SUPGJackson(),
-        "supg_tacred": SUPGTACRED(),
-        # ScaleDoc Benchmarks (defaults: query 0)
-        "scaledoc_pubmed_q0": ScaleDocPubMed(query_id="0"),
-        "scaledoc_big_patent_q0": ScaleDocBigPatent(query_id="0"),
-        "scaledoc_gov_report_q0": ScaleDocGovReport(query_id="0"),
+    # 1. Synthetic scenarios
+    synthetic_factories: dict[str, type[BaseScenario]] = {
+        "uninformative_proxy_floor": UninformativeProxyFloor,
+        "precision_tail_overfit": PrecisionTailOverfit,
+        "proxy_miscalibrated": ProxyMiscalibrated,
+        "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin,
+        "recall_boundary_critical_margin": RecallBoundaryCriticalMargin,
+        "trapped_head": TrappedHead,
+        "benign": Benign,
+        "semantic_join_needle": SemanticJoinNeedle,
+        "discrete_lexical_gate": DiscreteLexical,
+        "power_law_tail_leakage": PowerLawTailLeakage,
     }
-)
+    if clean_name in synthetic_factories:
+        return synthetic_factories[clean_name](**kwargs)
+
+    # 2. Extract dataset base name using regex (stripping optional source prefix)
+    m = re.match(r"^(?:(?:supg|scaledoc|bargain)_)?([a-z0-9_]+)$", clean_name)
+    if m:
+        base_name = m.group(1)
+
+        # SUPG real benchmark datasets
+        if base_name in SUPG_DATASETS:
+            spec = SUPG_DATASETS[base_name]
+            params: dict[str, Any] = {
+                "name": base_name,
+                "description": spec["description"],
+                "data_path": spec["data_path"],
+            }
+            params.update(kwargs)
+            return FileDataset(**params)
+
+        # Document benchmark datasets (ScaleDoc & BARGAIN)
+        if base_name in DATASET_GROUPS:
+            resolved_qid = str(query_id) if query_id is not None else "0"
+            resolved_oracle = (
+                oracle_model if oracle_model is not None else "azure/gpt-5.6-terra"
+            )
+            resolved_proxy = (
+                proxy_model if proxy_model is not None else "azure/gpt-5.6-luna"
+            )
+            return DocumentBenchmarkDataset(
+                name=base_name,
+                query_id=resolved_qid,
+                oracle_model=resolved_oracle,
+                proxy_model=resolved_proxy,
+                **kwargs,
+            )
+
+    valid_options = list_scenarios()
+    raise ValueError(f"Unknown scenario '{name}'. Valid options: {valid_options}")
+
+
+def list_scenarios() -> list[str]:
+    """Returns a sorted list of all canonical scenario identifiers."""
+    synthetic_names = [
+        "uninformative_proxy_floor",
+        "precision_tail_overfit",
+        "proxy_miscalibrated",
+        "precision_boundary_critical_margin",
+        "recall_boundary_critical_margin",
+        "trapped_head",
+        "benign",
+        "semantic_join_needle",
+        "discrete_lexical_gate",
+        "power_law_tail_leakage",
+    ]
+    supg_names = list(SUPG_DATASETS.keys())
+    benchmark_names = sorted(DATASET_GROUPS.keys())
+    return sorted(synthetic_names + supg_names + benchmark_names)
+
+
+def get_available_queries(
+    name: str,
+    data_dir: str | Path | None = None,
+) -> list[str]:
+    """Returns available query identifiers for a benchmark dataset.
+
+    Checks on-disk oracle directories first; if none are found, inspects
+    experiments/data/{group}/query.json. Returns an empty list for non-benchmark
+    scenarios (e.g. synthetic or SUPG).
+    """
+    clean_name = name.lower().strip()
+    match = re.match(r"^(?:(?:supg|scaledoc|bargain)_)?([a-z0-9_]+)$", clean_name)
+    base_name = match.group(1) if match else clean_name
+
+    if base_name not in DATASET_GROUPS:
+        return []
+
+    group = DATASET_GROUPS[base_name]
+    if data_dir is not None:
+        base_dir = Path(data_dir) / base_name
+        group_dir = Path(data_dir)
+    else:
+        base_dir = Path("experiments/data") / group / base_name
+        group_dir = Path("experiments/data") / group
+
+    found: set[str] = set()
+    oracle_dir = base_dir / "oracle"
+    if oracle_dir.is_dir():
+        for d in oracle_dir.iterdir():
+            if d.is_dir() and d.name.startswith("q"):
+                found.add(d.name[1:])
+
+    if not found:
+        query_json_path = group_dir / "query.json"
+        if query_json_path.is_file():
+            try:
+                with open(query_json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if base_name in data:
+                    for item in data[base_name]:
+                        found.add(str(item["q_id"]))
+            except Exception:
+                pass
+
+    if not found:
+        return ["0"]
+
+    def _sort_key(s: str):
+        parts = re.split(r"(\d+)", s)
+        return [int(p) if p.isdigit() else p for p in parts]
+
+    return sorted(found, key=_sort_key)
 
 
 __all__ = [
@@ -1173,15 +1265,8 @@ __all__ = [
     "RecallBoundaryCriticalMargin",
     "TrappedHead",
     "PowerLawTailLeakage",
-    "SUPGOnto",
-    "SUPGImageNet",
-    "SUPGImagenet",
-    "SUPGJackson",
-    "SUPGTACRED",
-    "SUPGTacred",
-    "ScaleDocDataset",
-    "ScaleDocPubMed",
-    "ScaleDocBigPatent",
-    "ScaleDocGovReport",
-    "SCENARIOS",
+    "DocumentBenchmarkDataset",
+    "get_scenario",
+    "list_scenarios",
+    "get_available_queries",
 ]

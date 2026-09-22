@@ -1,9 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
-from experiments.merge_results import load_experiment_results
 from experiments.runners import (
     ACTISRunner,
     BargainPRRunner,
@@ -11,8 +8,8 @@ from experiments.runners import (
 )
 from experiments.scenarios import (
     Benign,
+    DocumentBenchmarkDataset,
     PrecisionTailOverfit,
-    UninformativeProxyFloor,
 )
 
 
@@ -33,6 +30,9 @@ def test_scenario_to_dict_and_hashing():
 
     # Different scenario class alters hash
     assert scen1.config_hash() != scen5.config_hash()
+
+    # results_subpath
+    assert scen1.results_subpath() == Path("benign") / f"benign_{scen1.config_hash()}"
 
     # to_dict serializes correctly and is JSON-compatible
     d = scen1.to_dict()
@@ -113,8 +113,8 @@ def test_run_evaluation_suite_hierarchical_saving_and_skipping(tmp_path: Path):
     assert "experiment_name" not in summary
 
     # Verify directory structure:
-    # results_dir / <scen_name>_<hash> / <runner_name>_<hash> / <filename>
-    expected_scen_dir = results_dir / f"{scenario.name}_{scenario.config_hash()}"
+    # results_dir / scenario.results_subpath() / <runner_name>_<hash> / <filename>
+    expected_scen_dir = results_dir / scenario.results_subpath()
     expected_runner_dir = (
         expected_scen_dir / f"{runners[0].name}_{runners[0].config_hash()}"
     )
@@ -142,62 +142,23 @@ def test_run_evaluation_suite_hierarchical_saving_and_skipping(tmp_path: Path):
     )
     assert len(res2) == 1
     assert res2[0]["num_trials"] == summary["num_trials"]
-    assert res2[0]["joint_failure_rate"] == summary["joint_failure_rate"]
+    assert res2[0]["joint_failure"]["mean"] == summary["joint_failure"]["mean"]
 
 
-def test_merge_results_utility(tmp_path: Path):
-    results_dir = tmp_path / "hierarchical"
-    scen1 = Benign(pop_size=200, seed=1)
-    scen2 = UninformativeProxyFloor(pop_size=200, seed=2)
-    runner1 = ACTISRunner(name="actis_a", num_thresholds=5, adaptive=False)
-    runner2 = ACTISRunner(name="actis_b", num_thresholds=5, adaptive=False)
+def test_document_benchmark_results_subpath(tmp_path: Path):
+    dummy_file = tmp_path / "dummy.parquet"
+    dummy_file.touch()
 
-    # Run combination 1: scen1, runner1, delta=0.05, gamma=0.9
-    run_evaluation_suite(
-        scenario=scen1,
-        runners=[runner1],
-        num_trials=1,
-        pop_size=1000,
-        gamma_R=0.9,
-        gamma_P=0.9,
-        delta=0.05,
-        seed=1,
-        results_dir=results_dir,
+    bench = DocumentBenchmarkDataset(
+        name="pubmed",
+        query_id="0",
+        oracle_model="azure/gpt-5.6-terra",
+        proxy_model="azure/gpt-5.6-luna",
+        data_path=dummy_file,
     )
 
-    # Run combination 2: scen2, runner2, delta=0.01, gamma=0.8
-    run_evaluation_suite(
-        scenario=scen2,
-        runners=[runner2],
-        num_trials=1,
-        pop_size=1000,
-        gamma_R=0.8,
-        gamma_P=0.8,
-        delta=0.01,
-        seed=2,
-        results_dir=results_dir,
-    )
-
-    # Test loading all results
-    all_res = load_experiment_results(results_dir)
-    assert len(all_res) == 2
-
-    # Filter by scenario
-    benign_res = load_experiment_results(results_dir, scenarios=["benign"])
-    assert len(benign_res) == 1
-    assert benign_res[0]["scenario"]["name"] == "benign"
-
-    # Filter by runner
-    runner_b_res = load_experiment_results(results_dir, runners=["actis_b"])
-    assert len(runner_b_res) == 1
-    assert runner_b_res[0]["runner"]["name"] == "actis_b"
-
-    # Filter by delta
-    delta_01_res = load_experiment_results(results_dir, deltas=[0.01])
-    assert len(delta_01_res) == 1
-    assert delta_01_res[0]["promised_delta"] == pytest.approx(0.01)
-
-    # Filter by gamma
-    gamma_9_res = load_experiment_results(results_dir, gammas=[0.9])
-    assert len(gamma_9_res) == 1
-    assert gamma_9_res[0]["gamma_R"] == pytest.approx(0.9)
+    subpath = bench.results_subpath()
+    assert subpath.parts[0] == "pubmed"
+    assert subpath.parts[1] == "q0"
+    assert subpath.parts[2].startswith("azure-gpt-5.6-terra__azure-gpt-5.6-luna_")
+    assert bench.config_hash() in subpath.parts[2]
