@@ -80,9 +80,13 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
     and empirical variance accumulator $V_t = \sum_{i = 1}^{t} (x_i - \bar{x})^2$, the
     one-sided wealth process is given by:
     $$
-        M_t = \frac{1}{\sqrt{1 + \frac{V_t}{v_0}}} \exp\left(
-            \frac{(\max(0, S_t))^2}{2 (v_0 + V_t)}
-        \right)
+        M_t = \begin{cases}
+            \frac{1}{\sqrt{1 + \frac{V_t}{v_0}}}
+                \exp\left( \frac{S_t^2}{2(v_0 + V_t)} \right),
+                & \text{if } S_t > 0 \\
+            0,
+                & \text{if } S_t \le 0
+        \end{cases}
     $$
     where $v_0 > 0$ is a prior cumulative variance parameter that stabilizes the
     denominator against small-sample zero-variance collapse on rare-event data and tunes
