@@ -874,14 +874,39 @@ class TestBoundaryNullVarianceBounds:
         order = np.argsort(scores)
         weights_sorted = weights[order]
         idx_lower = np.searchsorted(scores[order], thresholds, side="left")
+        idx_upper = np.searchsorted(scores[order], thresholds_upper, side="left")
+
         suffix_max_weight = np.append(
             np.maximum.accumulate(weights_sorted[::-1])[::-1],
             np.max(weights),
         )
         w_max_lower = suffix_max_weight[idx_lower]
+        w_max_ge_upper = suffix_max_weight[idx_upper]
 
-        v_0_max_R = eff_n_0 * (1.0 - gamma_R) * w_max_lower
-        v_0_max_P = eff_n_0 * (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
+        prefix_max_weight = np.concatenate(([1.0], np.maximum.accumulate(weights_sorted)))
+        w_max_lt_lower = prefix_max_weight[idx_lower]
+
+        suffix_min_weight = np.append(
+            np.minimum.accumulate(weights_sorted[::-1])[::-1],
+            np.max(weights),
+        )
+        w_min_ge_lower = suffix_min_weight[idx_lower]
+
+        rho_R = w_max_lt_lower / np.maximum(w_min_ge_lower, 1e-12)
+        rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(w_min_ge_lower[np.newaxis, :], 1e-12)
+
+        v_0_max_R = (
+            eff_n_0
+            * (1.0 - gamma_R)
+            * ((1.0 - gamma_R) + gamma_R * rho_R)
+            * w_max_lower
+        )
+        v_0_max_P = (
+            eff_n_0
+            * (1.0 - gamma_P)
+            * ((1.0 - gamma_P) + gamma_P * rho_P)
+            * w_max_lower[np.newaxis, :]
+        )
 
         assert np.all(res._target_R <= v_0_max_R + 1e-12)
         assert np.all(res._target_P <= v_0_max_P + 1e-12)

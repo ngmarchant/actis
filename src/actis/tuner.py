@@ -738,11 +738,6 @@ def compute_prior_and_target_var(
             gamma_R**2
         ) * pos_mass_lt_lower
         v_0_target_R = eff_n_0 * sigma2_R
-
-        # Theoretical upper bound on boundary null process variance:
-        # sigma2 <= (1 - gamma_R) * max_weight
-        v_0_max_R = eff_n_0 * (1.0 - gamma_R) * max_weight
-        v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
         v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
         null_failure_prob_R = np.full(M_lower, 1 - gamma_R, dtype=np.float64)
 
@@ -769,11 +764,6 @@ def compute_prior_and_target_var(
 
         total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
         v_0_target_P = eff_n_0 * total_var
-
-        # Theoretical upper bound on boundary null process variance:
-        # sigma2 <= (1 - gamma_P) * max_weight
-        v_0_max_P = eff_n_0 * (1.0 - gamma_P) * max_weight
-        v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
         v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
         null_failure_prob_P = np.full((M_upper, M_lower), 1 - gamma_P, dtype=np.float64)
 
@@ -798,6 +788,23 @@ def compute_prior_and_target_var(
         max_weight,
     )
     w_max_lower = suffix_max_weight[idx_lower]
+    w_max_ge_upper = suffix_max_weight[idx_upper]
+
+    # Extremal partition weights for importance sampling disparity ratios:
+    # 1. Dropped partition: s < tau_lo
+    prefix_max_weight = np.concatenate(([1.0], np.maximum.accumulate(weights_sorted)))
+    w_max_lt_lower = prefix_max_weight[idx_lower]
+
+    # 2. Retained partition: s >= tau_lo
+    suffix_min_weight = np.append(
+        np.minimum.accumulate(weights_sorted[::-1])[::-1],
+        max_weight,
+    )
+    w_min_ge_lower = suffix_min_weight[idx_lower]
+
+    # Disparity ratios:
+    rho_R = w_max_lt_lower / np.maximum(w_min_ge_lower, 1e-12)
+    rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(w_min_ge_lower[np.newaxis, :], 1e-12)
 
     # Precompute weighted label probabilities via direct prefix and suffix sums
     # to avoid catastrophic cancellation in both lower and upper tails
@@ -811,9 +818,8 @@ def compute_prior_and_target_var(
     pos_mass_ge_lower = suffix_sum_pos_prob[idx_lower] / N
     pos_mass_lt_lower = prefix_sum_pos_prob[idx_lower] / N
 
-    # Boundary null cap for Recall: under H_0 (Recall <= gamma_R),
-    # false negative mass cannot exceed (1 - gamma_R)/gamma_R * true positive mass.
-    null_fn_cap = ((1.0 - gamma_R) / gamma_R) * pos_mass_ge_lower
+    # Boundary null cap for Recall incorporating partition weight disparity ratio rho_R:
+    null_fn_cap = ((1.0 - gamma_R) / gamma_R) * rho_R * pos_mass_ge_lower
     pos_mass_lt_lower = np.minimum(pos_mass_lt_lower, null_fn_cap)
 
     # Safety floor for recall (incorporates positive jumps only)
@@ -825,11 +831,6 @@ def compute_prior_and_target_var(
         gamma_R**2
     ) * pos_mass_lt_lower
     v_0_target_R = eff_n_0 * sigma2_R
-
-    # Theoretical upper bound on boundary null process variance:
-    # sigma2 <= (1 - gamma_R) * w_max_lower
-    v_0_max_R = eff_n_0 * (1.0 - gamma_R) * w_max_lower
-    v_0_target_R = np.minimum(v_0_target_R, v_0_max_R)
     v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
 
     # Proposal-adjusted null failure probability for recall via partition density:
@@ -871,9 +872,8 @@ def compute_prior_and_target_var(
     )
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
 
-    # Boundary null cap for Precision: under H_0 (Precision <= gamma_P),
-    # false positive mass cannot exceed (1 - gamma_P)/gamma_P * true positive mass.
-    null_fp_cap = ((1.0 - gamma_P) / gamma_P) * pos_mass_ge_lower[np.newaxis, :]
+    # Boundary null cap for Precision incorporating partition weight disparity ratio rho_P:
+    null_fp_cap = ((1.0 - gamma_P) / gamma_P) * rho_P * pos_mass_ge_lower[np.newaxis, :]
     neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
     neg_var_upper = (gamma_P**2) * neg_mass_ge_upper_2d
     pos_var_lower = (1.0 - gamma_P) ** 2 * pos_mass_ge_lower
@@ -886,11 +886,6 @@ def compute_prior_and_target_var(
     # and true-positive variance (from lower threshold) via NumPy broadcasting
     total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
     v_0_target_P = eff_n_0 * total_var
-
-    # Theoretical upper bound on boundary null process variance:
-    # sigma2 <= (1 - gamma_P) * w_max_lower
-    v_0_max_P = eff_n_0 * (1.0 - gamma_P) * w_max_lower[np.newaxis, :]
-    v_0_target_P = np.minimum(v_0_target_P, v_0_max_P)
     v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
 
     q_fp = q_sorted * (1.0 - scores_sorted)
