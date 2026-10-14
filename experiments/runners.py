@@ -376,6 +376,7 @@ class ACTISRunner(BaseFilterRunner):
                 thresholds=thresholds,
                 thresholds_upper=thresholds_upper,
                 weights=weights,
+                enable_variance_floor=self.enable_asymptotic_protection,
             )
         elif self.v_0 in ("global", "global_calibrated"):
             v_0 = compute_prior_and_target_var(
@@ -385,6 +386,7 @@ class ACTISRunner(BaseFilterRunner):
                 delta=delta,
                 thresholds=None,
                 weights=weights,
+                enable_variance_floor=self.enable_asymptotic_protection,
             )
         else:
             v_0 = self.v_0
@@ -404,7 +406,8 @@ class ACTISRunner(BaseFilterRunner):
             max_weight_ge=max_weight_ge,
             max_weight_lt=max_weight_lt,
             max_weight_ge_upper=max_weight_ge_upper,
-            enable_asymptotic_protection=self.enable_asymptotic_protection,
+            enable_variance_ratio_check=self.enable_asymptotic_protection,
+            enable_binomial_check=self.enable_asymptotic_protection,
             variance_ratio_bound=self.variance_ratio_bound,
         )
 

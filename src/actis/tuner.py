@@ -32,6 +32,8 @@ class AsymptoticValidityDiagnostics:
     variance_ratio_bound: float = 0.05
     delta: float = 0.05
     p_value: float | None = None
+    enable_variance_ratio_check: bool = True
+    enable_binomial_check: bool = True
 
     def is_valid(self) -> bool:
         """Returns True if all diagnostic checks passed."""
@@ -41,31 +43,34 @@ class AsymptoticValidityDiagnostics:
         """Returns the list of diagnostic warning messages."""
         issues: list[str] = []
 
-        ratio = self.v_t / max(self.v_0, 1e-16)
-        if self.v_t <= 0.0:
-            issues.append(
-                f"{self.metric} empirical variance accumulator V_t is 0.0 (too few "
-                f"positive events for CLT)."
+        if self.enable_variance_ratio_check:
+            ratio = self.v_t / max(self.v_0, 1e-16)
+            if self.v_t <= 0.0:
+                issues.append(
+                    f"{self.metric} empirical variance accumulator V_t is 0.0 (too few "
+                    f"positive events for CLT)."
+                )
+            elif ratio < self.variance_ratio_bound:
+                issues.append(
+                    f"{self.metric} empirical variance ratio V_t / v_0 is low "
+                    f"({ratio:.4g} < {self.variance_ratio_bound:.4g})."
+                )
+
+        if self.enable_binomial_check:
+            n_active = self.num_true_positives + self.num_false_negatives_or_positives
+            self.p_value = float(
+                scipy.special.bdtr(
+                    self.num_false_negatives_or_positives,
+                    n_active,
+                    self.null_failure_prob,
+                )
             )
-        elif ratio < self.variance_ratio_bound:
-            issues.append(
-                f"{self.metric} empirical variance ratio V_t / v_0 is low "
-                f"({ratio:.4g} < {self.variance_ratio_bound:.4g})."
-            )
-        n_active = self.num_true_positives + self.num_false_negatives_or_positives
-        self.p_value = float(
-            scipy.special.bdtr(
-                self.num_false_negatives_or_positives,
-                n_active,
-                self.null_failure_prob,
-            )
-        )
-        if self.p_value > self.delta:
-            issues.append(
-                f"{self.metric} binomial p-value ({self.p_value:.4g}) exceeds "
-                f"delta ({self.delta:.4g}), indicating insufficient finite-sample "
-                f"evidence under H0: {self.metric} <= {self.null_failure_prob:.4g}."
-            )
+            if self.p_value > self.delta:
+                issues.append(
+                    f"{self.metric} binomial p-value ({self.p_value:.4g}) exceeds "
+                    f"delta ({self.delta:.4g}), indicating insufficient finite-sample "
+                    f"evidence under H0: {self.metric} <= {self.null_failure_prob:.4g}."
+                )
 
         return issues
 
@@ -630,6 +635,7 @@ def compute_prior_and_target_var(
     thresholds_upper: Sequence[float] | NDArray[np.float64] | None = None,
     weights: ArrayLike | None = None,
     n_0: float | Literal["auto"] = "auto",
+    enable_variance_floor: bool = True,
 ) -> PriorAndTargetVar:
     r"""Computes prior variance parameters (with safety floor) and expected cumulative
     process target variances for the asymptotic Gaussian mixture supermartingales used
@@ -652,6 +658,9 @@ def compute_prior_and_target_var(
         weights: Optional importance weights $w(x) = 1 / (N \cdot q(x))$.
         n_0: Effective prior sample horizon. If "auto" (default), dynamically scaled
             to min(1000.0, max(50.0, 0.10 * N)).
+        enable_variance_floor: If True (default), enforces single-step safety floor
+            $v^{\text{floor}}$ on prior variances to eliminate single-sample
+            boundary crossings.
 
     Returns:
         A `PriorAndTargetVar` instance.
@@ -687,9 +696,10 @@ def compute_prior_and_target_var(
         else:
             weighted_pos_mass = float(np.mean(scores))
         sigma2 = max(weighted_pos_mass, 1.0 / N) * gamma_R * (1.0 - gamma_R)
-        v_0_target = eff_n_0 * sigma2
+        v_0_target = max(1e-12, eff_n_0 * sigma2)
+        prior_val = max(v_0_floor, v_0_target) if enable_variance_floor else v_0_target
         return PriorAndTargetVar(
-            max(v_0_floor, v_0_target),
+            prior_val,
             target_R=v_0_target,
             null_failure_prob_R=1.0 - gamma_R,
             null_failure_prob_P=1.0 - gamma_P,
@@ -737,8 +747,12 @@ def compute_prior_and_target_var(
         sigma2_R = (1.0 - gamma_R) ** 2 * pos_mass_ge_lower + (
             gamma_R**2
         ) * pos_mass_lt_lower
-        v_0_target_R = eff_n_0 * sigma2_R
-        v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
+        v_0_target_R = np.maximum(1e-12, eff_n_0 * sigma2_R)
+        v_0_R = (
+            np.maximum(v_0_floor_R, v_0_target_R)
+            if enable_variance_floor
+            else v_0_target_R
+        )
         null_failure_prob_R = np.full(M_lower, 1 - gamma_R, dtype=np.float64)
 
         pos_mass_ge_upper = (
@@ -763,8 +777,12 @@ def compute_prior_and_target_var(
         v_0_floor_P = (2.0 * b_P**2) / log_delta_P_inv
 
         total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
-        v_0_target_P = eff_n_0 * total_var
-        v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
+        v_0_target_P = np.maximum(1e-12, eff_n_0 * total_var)
+        v_0_P = (
+            np.maximum(v_0_floor_P, v_0_target_P)
+            if enable_variance_floor
+            else v_0_target_P
+        )
         null_failure_prob_P = np.full((M_upper, M_lower), 1 - gamma_P, dtype=np.float64)
 
         return PriorAndTargetVar(
@@ -830,8 +848,12 @@ def compute_prior_and_target_var(
     sigma2_R = (1.0 - gamma_R) ** 2 * pos_mass_ge_lower + (
         gamma_R**2
     ) * pos_mass_lt_lower
-    v_0_target_R = eff_n_0 * sigma2_R
-    v_0_R = np.maximum(v_0_floor_R, v_0_target_R)
+    v_0_target_R = np.maximum(1e-12, eff_n_0 * sigma2_R)
+    v_0_R = (
+        np.maximum(v_0_floor_R, v_0_target_R)
+        if enable_variance_floor
+        else v_0_target_R
+    )
 
     # Proposal-adjusted null failure probability for recall via partition density:
     # Direct prefix and suffix sums of q avoid subtractive cancellation in Q_ge
@@ -885,8 +907,12 @@ def compute_prior_and_target_var(
     # 2D second moment matrix: sum of false-positive variance (from upper threshold)
     # and true-positive variance (from lower threshold) via NumPy broadcasting
     total_var = neg_var_upper + pos_var_lower[np.newaxis, :]
-    v_0_target_P = eff_n_0 * total_var
-    v_0_P = np.maximum(v_0_floor_P, v_0_target_P)
+    v_0_target_P = np.maximum(1e-12, eff_n_0 * total_var)
+    v_0_P = (
+        np.maximum(v_0_floor_P, v_0_target_P)
+        if enable_variance_floor
+        else v_0_target_P
+    )
 
     q_fp = q_sorted * (1.0 - scores_sorted)
     q_tp = q_sorted * scores_sorted
@@ -961,6 +987,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         thresholds_upper: NDArray[np.float64],
         v_0: float | PriorAndTargetVar = 0.01,
         variance_ratio_bound: float = 0.05,
+        enable_variance_ratio_check: bool = True,
+        enable_binomial_check: bool = True,
     ) -> None:
         r"""
         Args:
@@ -979,6 +1007,10 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
                 scalar float or a `PriorAndTargetVar` instance. Defaults to 0.01.
             variance_ratio_bound: Maximum allowable ratio of cumulative process
                 variance to prior variance $V_t / v_0$. Defaults to 0.05.
+            enable_variance_ratio_check: If True (default), verifies empirical
+                quadratic variation accumulation $V_t / v_0 \ge \rho$.
+            enable_binomial_check: If True (default), verifies candidate thresholds
+                against an exact one-sided binomial test under the boundary null.
         """
         super().__init__(gamma_P, gamma_R, delta, thresholds, thresholds_upper)
         if isinstance(v_0, PriorAndTargetVar):
@@ -986,6 +1018,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
         else:
             self.v_0 = PriorAndTargetVar(prior_R=v_0)
         self.variance_ratio_bound = variance_ratio_bound
+        self.enable_variance_ratio_check = enable_variance_ratio_check
+        self.enable_binomial_check = enable_binomial_check
 
         # Update when adding samples to speed up asymptotic diagnostics
         self._num_tp = np.zeros(len(self.thresholds), dtype=np.int64)
@@ -1083,6 +1117,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             thresholds=(tau_lower,),
             variance_ratio_bound=self.variance_ratio_bound,
             delta=self.delta_R,
+            enable_variance_ratio_check=self.enable_variance_ratio_check,
+            enable_binomial_check=self.enable_binomial_check,
         )
 
     def asymptotic_diag_P(
@@ -1117,6 +1153,8 @@ class AsymptoticCascadeConfSeqs(CascadeConfSeqs):
             thresholds=(tau_lower, tau_upper),
             variance_ratio_bound=self.variance_ratio_bound,
             delta=delta,
+            enable_variance_ratio_check=self.enable_variance_ratio_check,
+            enable_binomial_check=self.enable_binomial_check,
         )
 
 
@@ -1141,7 +1179,8 @@ class ACTIS:
         max_weight_ge: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_lt: Sequence[float] | NDArray[np.float64] | None = None,
         max_weight_ge_upper: Sequence[float] | NDArray[np.float64] | None = None,
-        enable_asymptotic_protection: bool = True,
+        enable_variance_ratio_check: bool = True,
+        enable_binomial_check: bool = True,
         variance_ratio_bound: float = 0.05,
     ):
         r"""
@@ -1201,14 +1240,13 @@ class ACTIS:
                 `max_weight_ge` where `thresholds` is replaced by `thresholds_upper`.
                 This argument is not required for `conf_seq='asymptotic'` or if
                 sampling is done uniformly with/without replacement.
-            enable_asymptotic_protection: If `conf_seq='asymptotic'` and True, enables
-                heuristic protection for anytime-valid FWER control when operating in
-                the non-asymptotic regime. This arugment has no effect when
-                `conf_seq='finite'`.
+            enable_variance_ratio_check: If `conf_seq='asymptotic'` and True (default),
+                verifies empirical quadratic variation accumulation $V_t / v_0 \ge \rho$.
+            enable_binomial_check: If `conf_seq='asymptotic'` and True (default),
+                verifies candidate thresholds against an exact one-sided binomial test.
             variance_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies
                 the maximum allowable ratio of cumulative process variance to prior
-                variance $V_t / v_0$. Defaults to 0.05. This argument has no effect when
-                `conf_seq='finite'` or when `enable_asymptotic_protection` is False.
+                variance $V_t / v_0$. Defaults to 0.05.
         """
         if pop_size is not None and (pop_size <= 0 or pop_size != int(pop_size)):
             raise ValueError("Parameter `pop_size` must be a positive integer.")
@@ -1238,6 +1276,8 @@ class ACTIS:
                 thresholds_upper=self.thresholds_upper,
                 v_0=v_0,
                 variance_ratio_bound=variance_ratio_bound,
+                enable_variance_ratio_check=enable_variance_ratio_check,
+                enable_binomial_check=enable_binomial_check,
             )
         elif self.conf_seq == "finite":
             self.conf_seqs = FiniteSampleCascadeConfSeqs(
@@ -1264,7 +1304,8 @@ class ACTIS:
             predicted_oracle_rate=None,
         )
 
-        self.enable_asymptotic_protection = enable_asymptotic_protection
+        self.enable_variance_ratio_check = enable_variance_ratio_check
+        self.enable_binomial_check = enable_binomial_check
 
     def _resolve_min_positives(
         self,
@@ -1380,7 +1421,7 @@ class ACTIS:
                 break
 
             d = None
-            if self.enable_asymptotic_protection:
+            if self.enable_variance_ratio_check or self.enable_binomial_check:
                 d = self.conf_seqs.asymptotic_diag_R(k)
                 if d is not None and not d.is_valid():
                     if k_lower == 0:
@@ -1404,7 +1445,7 @@ class ACTIS:
                 break
 
             d = None
-            if self.enable_asymptotic_protection:
+            if self.enable_variance_ratio_check or self.enable_binomial_check:
                 d = self.conf_seqs.asymptotic_diag_P(k, k_lower)
                 if d is not None and not d.is_valid():
                     if k_upper == len(self.thresholds_upper) - 1:

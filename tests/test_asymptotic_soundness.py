@@ -910,3 +910,48 @@ class TestBoundaryNullVarianceBounds:
 
         assert np.all(res._target_R <= v_0_max_R + 1e-12)
         assert np.all(res._target_P <= v_0_max_P + 1e-12)
+
+
+def test_independent_safeguard_flags():
+    rng = np.random.default_rng(42)
+    scores = rng.beta(2, 5, size=200)
+    thresholds = np.array([0.2, 0.5, 0.8])
+
+    # 1. Variance floor flag in compute_prior_and_target_var
+    var_with_floor = compute_prior_and_target_var(
+        scores=scores, gamma_R=0.9, gamma_P=0.9, delta=0.05,
+        thresholds=thresholds, enable_variance_floor=True
+    )
+    var_no_floor = compute_prior_and_target_var(
+        scores=scores, gamma_R=0.9, gamma_P=0.9, delta=0.05,
+        thresholds=thresholds, enable_variance_floor=False
+    )
+    assert np.all(var_with_floor._prior_R >= var_no_floor._prior_R)
+    assert np.all(var_no_floor._prior_R == var_no_floor._target_R)
+    assert np.all(var_no_floor._prior_P == var_no_floor._target_P)
+
+    # 2. Independent flags in ACTIS
+    tuner_all_on = ACTIS(
+        gamma_R=0.9, gamma_P=0.9, delta=0.05, thresholds=thresholds,
+        conf_seq="asymptotic", v_0=var_with_floor,
+        enable_variance_ratio_check=True,
+        enable_binomial_check=True,
+    )
+    assert tuner_all_on.enable_variance_ratio_check is True
+    assert tuner_all_on.enable_binomial_check is True
+
+    tuner_no_checks = ACTIS(
+        gamma_R=0.9, gamma_P=0.9, delta=0.05, thresholds=thresholds,
+        conf_seq="asymptotic", v_0=var_no_floor,
+        enable_variance_ratio_check=False,
+        enable_binomial_check=False,
+    )
+    assert tuner_no_checks.enable_variance_ratio_check is False
+    assert tuner_no_checks.enable_binomial_check is False
+
+    # 3. ACTISRunner wiring
+    runner_on = ACTISRunner(name="actis_on", enable_asymptotic_protection=True)
+    runner_off = ACTISRunner(name="actis_off", enable_asymptotic_protection=False)
+    assert runner_on.enable_asymptotic_protection is True
+    assert runner_off.enable_asymptotic_protection is False
+

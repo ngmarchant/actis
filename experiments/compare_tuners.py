@@ -232,12 +232,12 @@ def parse_args():
         help="Prior variance for Gaussian mixture asymptotic CS (default: 'auto')",
     )
     parser.add_argument(
-        "--enable-asymptotic-protection",
-        action=BooleanOptionalAction,
-        default=True,
+        "--runners",
+        nargs="+",
+        default=None,
         help=(
-            "Whether to enable heuristic protection for anytime-valid FWER control "
-            "when operating in the non-asymptotic regime (default: True)"
+            "Names of runners to execute (e.g. actis_adaptive_is_asymptotic "
+            "actis_adaptive_is_asymptotic_no_safeguards). If omitted, default runners are executed."
         ),
     )
     parser.add_argument(
@@ -380,7 +380,26 @@ def main():
             batch_size=args.batch_size,
             max_sample_size=args.max_sample_size,
             min_positives=args.min_positives,
-            enable_asymptotic_protection=args.enable_asymptotic_protection,
+            enable_asymptotic_protection=True,
+            variance_ratio_bound=args.variance_ratio_bound,
+            tail_tolerance=args.tail_tolerance,
+        ),
+        ACTISRunner(
+            name="actis_adaptive_is_asymptotic_no_safeguards",
+            num_thresholds=args.num_thresholds,
+            num_thresholds_upper=args.num_thresholds_upper,
+            sampling_method="is",
+            alpha=args.alpha,
+            proposal_method=args.proposal_method,
+            power_law_quantiles=args.power_law_quantiles,
+            conf_seq="asymptotic",
+            v_0=args.v0,
+            adaptive=True,
+            initial_sample_size=args.sample_size,
+            batch_size=args.batch_size,
+            max_sample_size=args.max_sample_size,
+            min_positives=args.min_positives,
+            enable_asymptotic_protection=False,
             variance_ratio_bound=args.variance_ratio_bound,
             tail_tolerance=args.tail_tolerance,
         ),
@@ -397,7 +416,7 @@ def main():
             batch_size=args.batch_size,
             max_sample_size=args.max_sample_size,
             min_positives=args.min_positives,
-            enable_asymptotic_protection=args.enable_asymptotic_protection,
+            enable_asymptotic_protection=True,
             variance_ratio_bound=args.variance_ratio_bound,
         ),
         ACTISRunner(
@@ -423,6 +442,25 @@ def main():
         ScaleDocRunner(name="scaledoc"),
     ]
 
+    default_runner_names = {
+        "actis_adaptive_is_asymptotic",
+        "actis_adaptive_asymptotic",
+        "actis_adaptive",
+        "bargain_pr",
+        "lotus_original",
+        "scaledoc",
+    }
+    if args.runners is not None:
+        selected_set = set(args.runners)
+        runners_to_run = [r for r in runners if r.name in selected_set]
+        if not runners_to_run:
+            parser.error(
+                f"No matching runners found for {args.runners}. "
+                f"Available runners: {[r.name for r in runners]}"
+            )
+    else:
+        runners_to_run = [r for r in runners if r.name in default_runner_names]
+
     for scenario in scenarios_to_run:
         if args.pop_size is not None:
             scenario.pop_size = args.pop_size
@@ -431,7 +469,7 @@ def main():
 
         suite_res = run_evaluation_suite(
             scenario=scenario,
-            runners=runners,
+            runners=runners_to_run,
             num_trials=args.num_trials,
             pop_size=args.pop_size,
             gamma_R=args.target_recall,
