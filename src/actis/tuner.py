@@ -37,7 +37,26 @@ class AsymptoticValidityDiagnostics:
 
     def is_valid(self) -> bool:
         """Returns True if all diagnostic checks passed."""
-        return len(self.diagnose()) == 0
+        if self.enable_variance_ratio_check:
+            if self.v_t <= 0.0:
+                return False
+            ratio = self.v_t / max(self.v_0, 1e-16)
+            if ratio < self.variance_ratio_bound:
+                return False
+
+        if self.enable_binomial_check:
+            n_active = self.num_true_positives + self.num_false_negatives_or_positives
+            self.p_value = float(
+                scipy.special.bdtr(
+                    self.num_false_negatives_or_positives,
+                    n_active,
+                    self.null_failure_prob,
+                )
+            )
+            if self.p_value > self.delta:
+                return False
+
+        return True
 
     def diagnose(self) -> list[str]:
         """Returns the list of diagnostic warning messages."""
@@ -1307,6 +1326,31 @@ class ACTIS:
         self.enable_variance_ratio_check = enable_variance_ratio_check
         self.enable_binomial_check = enable_binomial_check
 
+        self._cached_pop_scores = None
+        self._cached_sorted_scores: NDArray[np.float64] | None = None
+        self._cached_mean_score: float | None = None
+
+    def _ensure_population_scores_cached(
+        self,
+        scores: Sequence[float] | NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], float]:
+        r"""Ensures sorted population scores and the mean proxy score are cached.
+
+        Returns:
+            A tuple of (sorted_scores, mean_score).
+        """
+        if (
+            self._cached_pop_scores is not scores
+            or self._cached_sorted_scores is None
+            or self._cached_mean_score is None
+        ):
+            arr = np.asarray(scores, dtype=np.float64)
+            self._cached_pop_scores = scores
+            self._cached_sorted_scores = np.sort(arr)
+            self._cached_mean_score = float(np.mean(arr))
+
+        return self._cached_sorted_scores, self._cached_mean_score
+
     def _resolve_min_positives(
         self,
         N: int | None = None,
@@ -1327,8 +1371,7 @@ class ACTIS:
 
         if self.p_floor == "auto":
             if scores is not None and len(scores) > 0:
-                scores = np.asarray(scores, dtype=np.float64)
-                mean_score = np.mean(scores)
+                _, mean_score = self._ensure_population_scores_cached(scores)
                 eff_p = min(0.01, max(1e-4, 0.5 * mean_score))
             else:
                 eff_p = 0.01
@@ -1521,9 +1564,14 @@ class ACTIS:
         if tau_lower > tau_upper:
             return 1.0
 
-        population_scores = np.asarray(population_scores, dtype=np.float64)
-        unsure = (population_scores >= tau_lower) & (population_scores < tau_upper)
-        return float(np.mean(unsure))
+        sorted_scores, _ = self._ensure_population_scores_cached(population_scores)
+        n = len(sorted_scores)
+        if n == 0:
+            return 0.0
+
+        idx_lower = int(np.searchsorted(sorted_scores, tau_lower, side="left"))
+        idx_upper = int(np.searchsorted(sorted_scores, tau_upper, side="left"))
+        return float((idx_upper - idx_lower) / n)
 
     def should_continue_sampling(
         self,

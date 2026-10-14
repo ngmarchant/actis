@@ -117,14 +117,9 @@ class GaussianMixtureSupermartingale(TestSupermartingale):
             raise ValueError("Parameter `v_0` must be positive.")
         self.v_0 = float(v_0)
         self.running_sum_sq = 0.0
-        self.x_min = float("inf")
-        self.x_max = float("-inf")
 
     def update(self, x: ArrayLike) -> None:
         x = np.asarray(x, dtype=np.float64)
-        if len(x) > 0:
-            self.x_min = min(self.x_min, float(np.min(x)))
-            self.x_max = max(self.x_max, float(np.max(x)))
         super().update(x)
         self.running_sum_sq += float(np.sum(x**2))
 
