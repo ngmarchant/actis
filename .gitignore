@@ -220,4 +220,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-experiments/*
+experiments/logs/*
+experiments/results/*
+experiments/results*/*
+experiments/plots/*
+experiments/data/*
+experiments/tables/*
+experiments/*.sh

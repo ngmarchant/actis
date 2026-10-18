@@ -1615,17 +1615,6 @@ class ACTIS:
         )
 
         num_positives = int(np.sum(self.conf_seqs.labels))
-        # if self.conf_seq == "asymptotic" and self.enable_asymptotic_protection:
-        #     asymp_valid = False
-        #     if ((self.current_thresholds.asymptotic_diag_R is None or
-        #         self.current_thresholds.asymptotic_diag_R.is_valid()) and
-        #         (self.current_thresholds.asymptotic_diag_P is None or
-        #         self.current_thresholds.asymptotic_diag_P.is_valid())):
-        #         asymp_valid = True
-
-        #     warmup_needed = (not asymp_valid) or (num_positives < min_positives)
-        # else:
-        #     warmup_needed = num_positives < min_positives
         warmup_needed = num_positives < min_positives
 
         if N_rem == 0 or n_draws >= max_sample_size:
