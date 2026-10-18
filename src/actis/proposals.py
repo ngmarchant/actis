@@ -1,9 +1,5 @@
-from typing import Literal
-
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-
-ProposalMethod = Literal["var_min", "snr_balanced"]
 
 
 def defensive_mixture(
@@ -36,7 +32,6 @@ def compute_pr_proposal(
     thresholds: ArrayLike,
     thresholds_upper: ArrayLike | None = None,
     alpha: float | None = None,
-    method: ProposalMethod = "snr_balanced",
     tail_tolerance: float = 0.10,
 ) -> NDArray[np.float64]:
     r"""Computes a proposal distribution for importance sampling in a
@@ -44,15 +39,13 @@ def compute_pr_proposal(
 
     The calibration process for a two-threshold cascade jointly evaluates both
     precision and recall targets over a grid of candidate lower thresholds and
-    a (potentially separate) grid of candidate upper thresholds. This function
-    supports two optimization principles for constructing the proposal distribution:
-
-    - ``"snr_balanced"`` (default): Weights each margin variance term by its
-      signal scale ($(1 - \gamma_R)^2$ for recall and $\gamma_P^2$ for precision),
-      symmetrically balancing true positive discovery and false positive rejection
-      based on signal-to-noise ratio.
-    - ``"var_min"``: Minimizes the total unweighted sum of estimator variances
-      across all candidate threshold pairs (dominated by precision variance).
+    a (potentially separate) grid of candidate upper thresholds. The proposal
+    distribution minimizes the joint estimation variance of the precision, recall,
+    and prevalence estimators across candidate threshold grids, standardizing each
+    constraint margin by its operational slack scale:
+    - $\lambda_{\mathrm{TPR}} = 1 + ((1 - \gamma_P) / \gamma_P)^2$
+    - $\lambda_{\mathrm{FPR}} = 1$
+    - $\lambda_{\pi} = (\gamma_R / (1 - \gamma_R))^2$
 
     To prevent boundary cancellation caused by proxy overconfidence ($s=0$ causing
     false-negative variance to vanish in recall, or $s=1$ causing false-positive
@@ -73,9 +66,6 @@ def compute_pr_proposal(
             the upper threshold. If None, defaults to `thresholds`.
         alpha: Defensive mixing weight in $(0, 1]$ for the uniform distribution. If
             None, defaults to 0.0.
-        method: Optimization principle to use: ``"snr_balanced"`` (default) for
-            SNR-standardized weighting or ``"var_min"`` for unweighted total variance
-            minimization.
         tail_tolerance: Dimensionless tail uncertainty tolerance in $[0, 1)$ for
             prevalence-adaptive clipping (default: 0.10). When 0.0, uses raw proxy
             scores.
@@ -104,16 +94,9 @@ def compute_pr_proposal(
         thresholds_upper = thresholds
         M_upper = M_lower
 
-    if method == "snr_balanced":
-        w_lower = 1.0 + ((1.0 - gamma_P) / max(gamma_P, 1e-6)) ** 2
-        w_upper = 1.0
-        w_base = (gamma_R / max(1.0 - gamma_R, 1e-6)) ** 2
-    elif method == "var_min":
-        w_lower = 2.0 + gamma_P**2 - 2 * gamma_P - 2 * gamma_R
-        w_upper = gamma_P**2
-        w_base = gamma_R**2
-    else:
-        raise ValueError(f"Unknown proposal method: {method}")
+    w_lower = 1.0 + ((1.0 - gamma_P) / max(gamma_P, 1e-6)) ** 2
+    w_upper = 1.0
+    w_base = (gamma_R / max(1.0 - gamma_R, 1e-6)) ** 2
 
     # Prevalence-adaptive two-sided tail clipping to eliminate boundary blind spots
     if tail_tolerance > 0.0:

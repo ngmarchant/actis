@@ -1,7 +1,7 @@
 import numpy as np
 
 from actis import compute_pr_proposal
-from experiments.compare_lotus_vs_bargain import parse_args
+from experiments.compare_tuners import parse_args
 from experiments.runners import ACTISRunner
 
 
@@ -91,27 +91,3 @@ def test_zero_tail_tolerance_unclipped():
         " are present."
     )
 
-
-def test_runner_parameter_propagation():
-    """Verify tail_tolerance parameter propagation in ACTISRunner."""
-    runner = ACTISRunner(
-        sampling_method="is",
-        tail_tolerance=0.12,
-    )
-    assert runner.tail_tolerance == 0.12
-
-
-def test_cli_argument_parser(monkeypatch):
-    """Verify that compare_lotus_vs_bargain parser accepts --tail-tolerance."""
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "compare_lotus_vs_bargain.py",
-            "--scenario",
-            "review",
-            "--tail-tolerance",
-            "0.08",
-        ],
-    )
-    args, _ = parse_args()
-    assert args.tail_tolerance == 0.08

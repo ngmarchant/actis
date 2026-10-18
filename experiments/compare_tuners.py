@@ -204,13 +204,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--proposal-method",
-        type=str,
-        choices=["snr_balanced", "var_min"],
-        default="snr_balanced",
-        help="Method to compute the proposal distribution (default: 'snr_balanced')",
-    )
-    parser.add_argument(
         "--power-law-quantiles",
         action=BooleanOptionalAction,
         default=True,
@@ -237,7 +230,8 @@ def parse_args():
         default=None,
         help=(
             "Names of runners to execute (e.g. actis_adaptive_is_asymptotic "
-            "actis_adaptive_is_asymptotic_no_safeguards). If omitted, default runners are executed."
+            "actis_adaptive_is_asymptotic_no_safeguards). If omitted, default runners "
+            "are executed."
         ),
     )
     parser.add_argument(
@@ -356,7 +350,6 @@ def main():
         #     num_thresholds_upper=args.num_thresholds_upper,
         #     sampling_method="is",
         #     alpha=args.alpha,
-        #     proposal_method=args.proposal_method,
         #     power_law_quantiles=args.power_law_quantiles,
         #     conf_seq="finite",
         #     adaptive=True,
@@ -371,7 +364,6 @@ def main():
             num_thresholds_upper=args.num_thresholds_upper,
             sampling_method="is",
             alpha=args.alpha,
-            proposal_method=args.proposal_method,
             power_law_quantiles=args.power_law_quantiles,
             conf_seq="asymptotic",
             v_0=args.v0,
@@ -390,7 +382,6 @@ def main():
             num_thresholds_upper=args.num_thresholds_upper,
             sampling_method="is",
             alpha=args.alpha,
-            proposal_method=args.proposal_method,
             power_law_quantiles=args.power_law_quantiles,
             conf_seq="asymptotic",
             v_0=args.v0,
@@ -440,6 +431,7 @@ def main():
         ),
         LotusRunner(name="lotus_original"),
         ScaleDocRunner(name="scaledoc"),
+        ScaleDocRunner(name="scaledoc_native", target_mode="f1_native"),
     ]
 
     default_runner_names = {

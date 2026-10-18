@@ -34,7 +34,7 @@ from lotus.sem_ops.cascade_utils import (
 from lotus.types import CascadeArgs
 from numpy.typing import ArrayLike, NDArray
 
-from actis import ACTIS, ProposalMethod, compute_pr_proposal
+from actis import ACTIS, compute_pr_proposal
 from actis.sampler import PopulationSampler
 from actis.threshold_grid import quantile_power_law_grid
 from actis.tuner import PriorAndTargetVar, compute_prior_and_target_var
@@ -205,9 +205,6 @@ class ACTISRunner(BaseFilterRunner):
     """Defensive mixing weight for importance sampling proposal distribution. If None
     or 0.0, no defensive mixing is applied."""
 
-    proposal_method: ProposalMethod = "snr_balanced"
-    """Method to use when computing the importance sampling proposal distribution."""
-
     tail_tolerance: float = 0.10
     """Dimensionless tail uncertainty tolerance for prevalence-adaptive clipping of
     importance sampling proposal distribution."""
@@ -320,7 +317,6 @@ class ACTISRunner(BaseFilterRunner):
                 thresholds=thresholds,
                 thresholds_upper=thresholds_upper,
                 alpha=self.alpha,
-                method=self.proposal_method,
                 tail_tolerance=self.tail_tolerance,
             )
 
