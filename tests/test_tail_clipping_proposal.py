@@ -1,8 +1,6 @@
 import numpy as np
 
 from actis import compute_pr_proposal
-from experiments.compare_tuners import parse_args
-from experiments.runners import ACTISRunner
 
 
 def test_strict_support_positivity():

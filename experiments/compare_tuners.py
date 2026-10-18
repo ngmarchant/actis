@@ -92,7 +92,11 @@ def parse_sample_size(val: str) -> int | str:
 
 
 def parse_args():
-    parser = ArgumentParser(description="Compare LOTUS vs BARGAIN (unconstrained).")
+    parser = ArgumentParser(
+        description=(
+            "Compare ACTIS and baseline cascade tuners across benchmark datasets."
+        )
+    )
     parser.add_argument(
         "--scenario",
         type=str,
@@ -403,7 +407,7 @@ def main():
             num_thresholds=20,
             sample_step=100,
         ),
-        LotusRunner(name="lotus_original"),
+        LotusRunner(name="lotus"),
         ScaleDocRunner(name="scaledoc"),
         ScaleDocRunner(name="scaledoc_native", target_mode="f1_native"),
     ]
@@ -413,7 +417,7 @@ def main():
         "actis_adaptive_asymptotic",
         "actis_adaptive",
         "bargain_pr",
-        "lotus_original",
+        "lotus",
         "scaledoc",
     }
     if args.runners is not None:

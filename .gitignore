@@ -227,3 +227,6 @@ experiments/plots/*
 experiments/data/*
 experiments/tables/*
 experiments/*.sh
+
+# Paper draft sources
+paper-source/

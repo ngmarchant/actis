@@ -31,6 +31,7 @@ reference = [
 experiments = [
     "plotnine",
     "datasets>=2.0.0",
+    "pandas>=2.0.0",
     "bargain @ git+ssh://git@github.com/ngmarchant/BARGAIN.git@perf",
     "lotus-ai @ git+ssh://git@github.com/ngmarchant/lotus.git@perf",
     "scikit-learn",

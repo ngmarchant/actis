@@ -800,6 +800,24 @@ if _HAS_SCALEDOC:
                 tau_neg=tau_neg,
                 calib_indices=calib_samples,
             )
+else:
+
+    @dataclass(kw_only=True)
+    class ScaleDocRunner(BaseFilterRunner):
+        """Stub runner when ScaleDoc external dependency is not available."""
+
+        def run_trial(
+            self,
+            population: Population,
+            gamma_R: float,
+            gamma_P: float,
+            delta: float,
+            rng: np.random.Generator,
+        ) -> TrialResult:
+            raise RuntimeError(
+                "ScaleDoc is not available. Please initialize submodules with: "
+                "git submodule update --init --recursive"
+            )
 
 
 def summarize_runner_trials(

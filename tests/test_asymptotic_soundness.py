@@ -883,7 +883,9 @@ class TestBoundaryNullVarianceBounds:
         w_max_lower = suffix_max_weight[idx_lower]
         w_max_ge_upper = suffix_max_weight[idx_upper]
 
-        prefix_max_weight = np.concatenate(([1.0], np.maximum.accumulate(weights_sorted)))
+        prefix_max_weight = np.concatenate(
+            ([1.0], np.maximum.accumulate(weights_sorted))
+        )
         w_max_lt_lower = prefix_max_weight[idx_lower]
 
         suffix_min_weight = np.append(
@@ -893,7 +895,9 @@ class TestBoundaryNullVarianceBounds:
         w_min_ge_lower = suffix_min_weight[idx_lower]
 
         rho_R = w_max_lt_lower / np.maximum(w_min_ge_lower, 1e-12)
-        rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(w_min_ge_lower[np.newaxis, :], 1e-12)
+        rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(
+            w_min_ge_lower[np.newaxis, :], 1e-12
+        )
 
         v_0_max_R = (
             eff_n_0

@@ -841,7 +841,9 @@ def compute_prior_and_target_var(
 
     # Disparity ratios:
     rho_R = w_max_lt_lower / np.maximum(w_min_ge_lower, 1e-12)
-    rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(w_min_ge_lower[np.newaxis, :], 1e-12)
+    rho_P = w_max_ge_upper[:, np.newaxis] / np.maximum(
+        w_min_ge_lower[np.newaxis, :], 1e-12
+    )
 
     # Precompute weighted label probabilities via direct prefix and suffix sums
     # to avoid catastrophic cancellation in both lower and upper tails
@@ -913,8 +915,11 @@ def compute_prior_and_target_var(
     )
     neg_mass_ge_upper = suffix_sum_neg_prob[idx_upper] / N
 
-    # Boundary null cap for Precision incorporating partition weight disparity ratio rho_P:
-    null_fp_cap = ((1.0 - gamma_P) / gamma_P) * rho_P * pos_mass_ge_lower[np.newaxis, :]
+    # Boundary null cap for Precision incorporating partition weight
+    # disparity ratio rho_P:
+    null_fp_cap = (
+        ((1.0 - gamma_P) / gamma_P) * rho_P * pos_mass_ge_lower[np.newaxis, :]
+    )
     neg_mass_ge_upper_2d = np.minimum(neg_mass_ge_upper[:, np.newaxis], null_fp_cap)
     neg_var_upper = (gamma_P**2) * neg_mass_ge_upper_2d
     pos_var_lower = (1.0 - gamma_P) ** 2 * pos_mass_ge_lower
@@ -1260,7 +1265,8 @@ class ACTIS:
                 This argument is not required for `conf_seq='asymptotic'` or if
                 sampling is done uniformly with/without replacement.
             enable_variance_ratio_check: If `conf_seq='asymptotic'` and True (default),
-                verifies empirical quadratic variation accumulation $V_t / v_0 \ge \rho$.
+                verifies empirical quadratic variation accumulation
+                $V_t / v_0 \ge \rho$.
             enable_binomial_check: If `conf_seq='asymptotic'` and True (default),
                 verifies candidate thresholds against an exact one-sided binomial test.
             variance_ratio_bound: If `conf_seq='asymptotic'`, this parameter specifies

@@ -78,7 +78,7 @@ METHOD_DISPLAY_NAMES = {
     "scaledoc": "ScaleDoc",
     "scaledoc_native": "ScaleDoc (Native)",
     "bargain_pr": "BARGAIN",
-    "lotus_original": "LOTUS",
+    "lotus": "LOTUS",
 }
 
 METHOD_ORDER = [
@@ -121,7 +121,7 @@ DEFAULT_FOCUS_METHODS = [
     ("actis_adaptive", "ACTIS-U"),
     ("bargain_pr", "BARGAIN"),
     ("scaledoc", "ScaleDoc"),
-    ("lotus_original", "LOTUS"),
+    ("lotus", "LOTUS"),
 ]
 
 DEFAULT_APPENDIX_METHODS = [
@@ -130,7 +130,7 @@ DEFAULT_APPENDIX_METHODS = [
     ("actis_adaptive_asymptotic", "ACTIS-U (Asy)"),
     ("bargain_pr", "BARGAIN"),
     ("scaledoc", "ScaleDoc"),
-    ("lotus_original", "LOTUS"),
+    ("lotus", "LOTUS"),
 ]
 
 
