@@ -4,8 +4,8 @@ Generic Filter Runners & Evaluation Harness for Semantic Database Filtering
 
 Defines abstract base runners and concrete implementations for:
 - ACTIS (`ACTISRunner`)
-- BARGAIN-PR (`BargainPRRunner`)
-- LOTUS (`LotusOriginalRunner`)
+- BARGAIN (`BargainPRRunner`)
+- LOTUS (`LotusRunner`)
 
 Provides a unified evaluation suite (`run_evaluation_suite`) for paired Monte Carlo
 benchmarking.
@@ -674,9 +674,16 @@ if _HAS_SCALEDOC:
         """Window size for moving average smoothing of score distributions
         (default 5)."""
 
+        target_mode: Literal["pr_harmonic", "f1_native"] = "pr_harmonic"
+        """Target mode: 'pr_harmonic' sets gamma_F = 2*gamma/(1+gamma) to guarantee
+        joint precision/recall >= gamma. 'f1_native' sets gamma_F = max(gamma_P,
+        gamma_R) directly for evaluating native F1 guarantees."""
+
         def __post_init__(self):
             if self.name == "":
-                self.name = "scaledoc"
+                self.name = (
+                    "scaledoc_native" if self.target_mode == "f1_native" else "scaledoc"
+                )
 
         def run_trial(
             self,
@@ -690,13 +697,16 @@ if _HAS_SCALEDOC:
             labels = population.labels
             pop_size = len(population)
 
-            # ScaleDoc only supports a target F1 score gamma_F, not separate precision
-            # and recall targets. In order to compare, setting:
-            # gamma_F = max(2*gamma_P / (1 + gamma_P), 2*gamma_R / (1 + gamma_R))
-            # guarantees that precision >= gamma_P and recall >= gamma_R.
-            f1_p = (2.0 * gamma_P) / (1.0 + gamma_P)
-            f1_r = (2.0 * gamma_R) / (1.0 + gamma_R)
-            gamma_F = max(f1_p, f1_r)
+            if self.target_mode == "f1_native":
+                gamma_F = max(gamma_P, gamma_R)
+            else:
+                # ScaleDoc only supports a target F1 score gamma_F, not separate
+                # precision and recall targets. In order to compare, setting:
+                # gamma_F = max(2*gamma_P / (1 + gamma_P), 2*gamma_R / (1 + gamma_R))
+                # guarantees that precision >= gamma_P and recall >= gamma_R.
+                f1_p = (2.0 * gamma_P) / (1.0 + gamma_P)
+                f1_r = (2.0 * gamma_R) / (1.0 + gamma_R)
+                gamma_F = max(f1_p, f1_r)
 
             sample_rate = self.sample_rate
             if self.sample_size is not None and pop_size > 0:
@@ -809,6 +819,23 @@ def summarize_runner_trials(
     prec_fail = prec_arr < gamma_P
     joint_fail = rec_fail | prec_fail
 
+    denom = prec_arr + rec_arr
+    f1_arr = np.where(
+        denom > 0, 2.0 * prec_arr * rec_arr / np.maximum(denom, 1e-12), 0.0
+    )
+    target_f1 = max(gamma_P, gamma_R)
+    f1_fail = f1_arr < target_f1
+
+    # For runners natively targeting F1 (e.g. scaledoc_native), the primary failure
+    # audited is f1_fail rather than joint precision/recall failure.
+    if (
+        getattr(runner, "target_mode", None) == "f1_native"
+        or runner.name == "scaledoc_native"
+    ):
+        effective_joint_fail = f1_fail
+    else:
+        effective_joint_fail = joint_fail
+
     def metric_dict(vals: ArrayLike, include_raw: bool) -> dict[str, Any]:
         vals = np.asarray(vals)
         d = {
@@ -832,7 +859,10 @@ def summarize_runner_trials(
         "gamma_R": gamma_R,
         "gamma_P": gamma_P,
         "promised_delta": delta,
-        "joint_failure": metric_dict(joint_fail, include_raw),
+        "joint_failure": metric_dict(effective_joint_fail, include_raw),
+        "f1_failure": metric_dict(f1_fail, include_raw),
+        "f1": metric_dict(f1_arr, include_raw),
+        "pr_joint_failure": metric_dict(joint_fail, include_raw),
         "recall_failure": metric_dict(rec_fail, include_raw),
         "precision_failure": metric_dict(prec_fail, include_raw),
         "recall": metric_dict(rec_arr, include_raw),

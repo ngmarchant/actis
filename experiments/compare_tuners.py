@@ -98,7 +98,7 @@ def parse_args():
         type=str,
         required=True,
         help="Scenario identifier or benchmark dataset name to run "
-        "(e.g. 'court', 'pubmed', 'onto', 'benign').",
+        "(e.g. 'court', 'pubmed', 'onto').",
     )
     parser.add_argument(
         "--query",

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from datasets import Dataset
 
-from experiments.compare_lotus_vs_bargain import parse_query_args
+from experiments.compare_tuners import parse_query_args
 from experiments.data_prep.labeling import (
     add_model_output,
     add_oracle_labels,
@@ -371,17 +371,12 @@ def test_get_scenario_varying_models_and_kwargs(tmp_path):
     supg_sc_prefixed = get_scenario("supg_onto", pop_size=123)
     assert supg_sc_prefixed.pop_size == 123
 
-    # Synthetic forwarding kwargs
-    synth_sc = get_scenario("benign", pop_size=777)
-    assert synth_sc.pop_size == 777
-
     # list_scenarios verification (all prefixes omitted consistently)
     all_scenarios = list_scenarios()
     assert "court" in all_scenarios
     assert "pubmed" in all_scenarios
     assert "onto" in all_scenarios
     assert "supg_onto" not in all_scenarios
-    assert "benign" in all_scenarios
 
 
 def test_get_available_queries_and_parse_query_args(tmp_path):
@@ -395,7 +390,6 @@ def test_get_available_queries_and_parse_query_args(tmp_path):
     # Test get_available_queries for non-benchmark datasets
     assert get_available_queries("onto") == []
     assert get_available_queries("supg_onto") == []
-    assert get_available_queries("benign") == []
 
     # Test get_available_queries for BARGAIN court
     court_queries = get_available_queries("court")

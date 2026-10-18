@@ -204,107 +204,6 @@ class BaseScenario(ABC):
 
 
 @dataclass(kw_only=True)
-class UninformativeProxyFloor(BaseScenario):
-    """
-    Uninformative Proxy Floor Stress Test.
-
-    Positives are rare (1.5% of the population) and the proxy scores carry minimal
-    ranking signal (AUC ~0.6). Because true precision in [0.35, 0.85] is only ~3%,
-    the proxy cannot accept items on its own. This forces a high theoretical oracle
-    call floor (>= 55% at 80% recall).
-
-    This scenario tests whether algorithms correctly adhere to the high oracle floor
-    instead of prematurely under-calling the oracle and violating guarantees.
-    """
-
-    name: str = "uninformative_proxy_floor"
-    description: str = (
-        "Weak proxy (AUC ~0.6) and 1.5% prevalence forcing an oracle floor >= 55%."
-    )
-    pop_size: int | None = 100000
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population where scores carry minimal ranking signal.
-
-        Positives make up 1.5% of the data and have scores uniformly distributed in
-        [0.35, 0.85]. Negatives have scores uniformly distributed in [0.0, 1.0].
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-
-        scores = rng.uniform(0.0, 1.0, size=pop_size)
-        oracle = np.zeros(pop_size, dtype=bool)
-
-        n_positives = int(0.015 * pop_size)
-        pos_idx = rng.choice(pop_size, size=n_positives, replace=False)
-        oracle[pos_idx] = True
-
-        # Positives have proxy scores uniformly in [0.35, 0.85]
-        scores[pos_idx] = rng.uniform(0.35, 0.85, size=n_positives)
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class PrecisionTailOverfit(BaseScenario):
-    """
-    Precision Tail Overfitting.
-
-    The upper tail of proxy scores [0.75, 1.0] has a true population precision
-    equal to (gamma_P - delta_P), which is strictly below the precision target.
-
-    Because high scores are sparse, a small sample drawn from the tail often contains
-    only true positives by chance. When this happens, the observed sample variance
-    evaluates to zero. Naive variance estimators collapse their confidence intervals,
-    falsely concluding that precision is 100% and accepting thresholds that are too low.
-    """
-
-    name: str = "precision_tail_overfit"
-    description: str = (
-        "Sparse upper tail with precision calibrated to gamma_P - delta_P, "
-        "testing against zero sample variance collapse."
-    )
-    pop_size: int | None = 100000
-    gamma_P: float = 0.8
-    delta_P: float = 0.15
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population with an overfit upper tail that scales with target
-        precision.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-
-        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
-        p_tail = min(0.9, max(0.4, eff_gamma_P - self.delta_P))
-
-        # 85% negatives, 15% positives
-        n_pos = int(0.15 * pop_size)
-        n_neg = pop_size - n_pos
-
-        scores = np.zeros(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-        oracle[:n_pos] = True
-
-        # Positives uniformly distributed in [0.5, 1.0] -> half in [0.75, 1.0]
-        scores[:n_pos] = rng.uniform(0.5, 1.0, size=n_pos)
-        n_pos_high = int(0.5 * n_pos)
-
-        # Negative distractors in [0.75, 1.0] tuned so tail precision is p_tail:
-        # n_pos_high / (n_pos_high + n_neg_high) = p_tail
-        n_neg_high = int(n_pos_high * (1.0 - p_tail) / p_tail)
-        n_neg_high = min(n_neg_high, int(0.4 * n_neg))
-        n_neg_low = n_neg - n_neg_high
-
-        scores[n_pos : n_pos + n_neg_low] = rng.uniform(0.0, 0.6, size=n_neg_low)
-        scores[n_pos + n_neg_low :] = rng.uniform(0.75, 1.0, size=n_neg_high)
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
 class Benign(BaseScenario):
     """
     Benign Data (Calibrated Polarized Neural Proxy).
@@ -339,384 +238,6 @@ class Benign(BaseScenario):
         scores[n_pos:] = rng.beta(0.8, 4.0, size=n_neg)
 
         return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class SemanticJoinNeedle(BaseScenario):
-    """
-    Extreme Sparsity (Semantic Join Needle-in-a-Haystack).
-
-    Models a cross-product join where matching pairs are exceptionally rare (0.05%
-    prevalence).
-    The proxy has high discriminative ability: positives have scores in [0.7, 0.95],
-    while most negatives have scores near 0.0.
-
-    This scenario tests positive discovery under extreme class imbalance. Uniform
-    sampling struggles to find any positives, while importance sampling concentrates
-    queries on the tail.
-    """
-
-    name: str = "semantic_join_needle"
-    description: str = (
-        "Semantic join with 0.05% prevalence testing positive discovery under extreme "
-        "sparsity."
-    )
-    pop_size: int | None = 100000
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates an extremely sparse population modeling a semantic join operator.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-
-        n_pos = max(1, int(0.0005 * pop_size))
-        n_neg = pop_size - n_pos
-
-        scores = np.empty(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-        oracle[:n_pos] = True
-
-        # Positives concentrated in [0.7, 0.95]
-        scores[:n_pos] = rng.beta(5.0, 1.5, size=n_pos)
-        # Negatives overwhelmingly concentrated near 0.0 (98% < 0.02)
-        scores[n_pos:] = rng.beta(0.2, 8.0, size=n_neg)
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class DiscreteLexical(BaseScenario):
-    """
-    Discrete Lexical Proxy.
-
-    Models a keyword or quantized proxy (such as BM25 overlap or hash counts).
-    85% of items have a score of 0.0, and the remaining 15% are distributed over
-    discrete levels {0.2, 0.4, 0.6, 0.8, 1.0}.
-
-    This scenario tests how algorithms handle ties and score collisions. It evaluates
-    whether candidate threshold grids handle duplicates cleanly and whether sequential
-    searches stall on identical scores.
-    """
-
-    name: str = "discrete_lexical_gate"
-    description: str = (
-        "Lexical proxy with 85% at score 0.0 and tied discrete levels "
-        "{0.2, 0.4, 0.6, 0.8, 1.0}."
-    )
-    pop_size: int | None = 100000
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population modeling a lightweight lexical proxy with tied discrete
-        scores.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-
-        scores = np.zeros(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-
-        # 85% items have score 0.0 with tiny positive leakage (0.1%)
-        n_zero = int(0.85 * pop_size)
-        oracle[:n_zero] = rng.random(size=n_zero) < 0.001
-
-        # Remaining 15% items distributed over discrete levels: 0.2, 0.4, 0.6, 0.8, 1.0
-        n_active = pop_size - n_zero
-        levels = np.array([0.2, 0.4, 0.6, 0.8, 1.0])
-        level_probs = np.array([0.05, 0.15, 0.4, 0.75, 0.95])
-        assigned_levels = rng.choice(levels, size=n_active)
-        scores[n_zero:] = assigned_levels
-
-        for lvl, p in zip(levels, level_probs):
-            mask = np.zeros(pop_size, dtype=bool)
-            mask[n_zero:] = assigned_levels == lvl
-            oracle[mask] = rng.random(size=np.sum(mask)) < p
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class PrecisionBoundaryCriticalMargin(BaseScenario):
-    """
-    Precision Boundary Critical Margin.
-
-    Creates a population where precision across a broad score band [0.7, 0.9] is
-    stubbornly (gamma_P - margin_gap), strictly below the precision target. Above 0.9,
-    precision rises comfortably above gamma_P.
-
-    This scenario stress-tests sequential early stopping against false acceptances.
-    Algorithms that stop prematurely based on a lucky run in early batches will
-    accept a threshold in [0.7, 0.9] and fail the precision guarantee.
-    """
-
-    name: str = "precision_boundary_critical_margin"
-    description: str = (
-        "Near-target precision boundary test with precision in [0.7, 0.9] at "
-        "gamma_P - margin_gap testing early-stopping false acceptance."
-    )
-    pop_size: int | None = 100000
-    gamma_P: float = 0.8
-    margin_gap: float = 0.015
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population with a sub-target precision band tuned to target
-        precision.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
-
-        # Precision in [0.7, 0.9] is strictly below target gamma_P by margin_gap
-        boundary_prec = max(0.05, eff_gamma_P - self.margin_gap)
-        # Above 0.9, precision is comfortably above gamma_P
-        high_prec = min(0.99, eff_gamma_P + max(0.02, (1.0 - eff_gamma_P) * 0.25))
-
-        scores = np.empty(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-
-        # Region 1: 70% in [0.0, 0.7] with low positive rate (1%)
-        n1 = int(0.7 * pop_size)
-        scores[:n1] = rng.uniform(0.0, 0.7, size=n1)
-        oracle[:n1] = rng.random(size=n1) < 0.01
-
-        # Region 2: 27% in [0.7, 0.9] with precision just below target
-        n2 = int(0.27 * pop_size)
-        scores[n1 : n1 + n2] = rng.uniform(0.7, 0.9, size=n2)
-        oracle[n1 : n1 + n2] = rng.random(size=n2) < boundary_prec
-
-        # Region 3: 3% in [0.9, 1.0] with high precision above target
-        n3 = pop_size - n1 - n2
-        scores[n1 + n2 :] = rng.uniform(0.9, 1.0, size=n3)
-        oracle[n1 + n2 :] = rng.random(size=n3) < high_prec
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class RecallBoundaryCriticalMargin(BaseScenario):
-    """
-    Recall Boundary Critical Margin.
-
-    Partitions positives so that dropping items with scores below candidate cutoffs in
-    [0.15, 0.35] retains only (gamma_R - margin_gap) of all positives, falling just
-    short of the recall target. To satisfy the target, the cascade must keep items
-    with scores down to 0.05.
-
-    This scenario stress-tests sequential recall bounds against under-coverage.
-    Algorithms that underestimate variance in the dropped region will set the negative
-    threshold too high and fail the recall guarantee.
-    """
-
-    name: str = "recall_boundary_critical_margin"
-    description: str = (
-        "Near-target recall boundary test where tau_lower in [0.15, 0.35] achieves "
-        "gamma_R - margin_gap testing premature lower threshold acceptance."
-    )
-    pop_size: int | None = 100000
-    gamma_R: float = 0.8
-    margin_gap: float = 0.015
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population with a sub-target recall boundary tuned to target recall.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-        eff_gamma_R = kwargs.get("gamma_R", self.gamma_R)
-
-        n_pos = int(0.15 * pop_size)
-        n_neg = pop_size - n_pos
-
-        scores = np.empty(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-        oracle[:n_pos] = True
-
-        # Positives: split into safe low-score tail [0.0, 0.15] and upper band
-        # [0.15, 1.0]
-        # Dropping [0.0, 0.15] loses (1 - gamma_R + margin_gap) of positives,
-        # leaving exactly gamma_R - margin_gap of positives in [0.15, 1.0].
-        f_low = min(0.5, max(0.04, (1.0 - eff_gamma_R) + self.margin_gap))
-        n_pos_low = int(f_low * n_pos)
-        n_pos_high = n_pos - n_pos_low
-
-        scores[:n_pos_low] = rng.uniform(0.0, 0.15, size=n_pos_low)
-        scores[n_pos_low:n_pos] = rng.beta(4.0, 0.8, size=n_pos_high)
-
-        # Negatives: distributed across low to moderate scores
-        scores[n_pos:] = rng.beta(0.8, 4.0, size=n_neg)
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class TrappedHead(BaseScenario):
-    """
-    Trapped Head Distribution.
-
-    Features a deceptive upper score profile where an extreme high-scoring 'head'
-    in [0.95, 1.0] contains 100% true positives, while the immediately preceding
-    upper band in [0.75, 0.95) has precision strictly below target
-    (gamma_P - margin_gap).
-
-    Heuristic sliding windows or aggressive early stopping can prematurely accept a
-    threshold near 0.75-0.85 after encountering early positive runs, pulling the
-    overall accepted region precision below gamma_P.
-    """
-
-    name: str = "trapped_head"
-    description: str = (
-        "Trapped head with pure positive tail in [0.95, 1.0] and "
-        "sub-target band in [0.75, 0.95) at gamma_P - margin_gap, "
-        "testing sliding-window and early-stopping false acceptance."
-    )
-    pop_size: int | None = 100000
-    gamma_P: float = 0.8
-    margin_gap: float = 0.08
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population with a deceptive trapped head score distribution.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-        eff_gamma_P = kwargs.get("gamma_P", self.gamma_P)
-
-        # Region 1: 90% uninformative body in [0.0, 0.75] with 1% positives
-        n_body = int(0.90 * pop_size)
-
-        # Region 2: 9.5% deceptive band in [0.75, 0.95] with sub-target precision
-        n_band = int(0.095 * pop_size)
-        band_prec = max(0.05, eff_gamma_P - self.margin_gap)
-
-        # Region 3: 0.5% trapped head in [0.95, 1.0] with 100% precision
-        n_head = pop_size - n_body - n_band
-
-        scores = np.empty(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-
-        scores[:n_body] = rng.uniform(0.0, 0.75, size=n_body)
-        oracle[:n_body] = rng.random(size=n_body) < 0.01
-
-        scores[n_body : n_body + n_band] = rng.uniform(0.75, 0.95, size=n_band)
-        oracle[n_body : n_body + n_band] = rng.random(size=n_band) < band_prec
-
-        scores[n_body + n_band :] = rng.uniform(0.95, 1.0, size=n_head)
-        oracle[n_body + n_band :] = True
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class PowerLawTailLeakage(BaseScenario):
-    """
-    Power-Law Tail Leakage.
-
-    Simulates dense vector retrieval where 98% of data has low scores, while the top 2%
-    contains true positives mixed with power-law distractors extending into [0.95, 1.0].
-
-    Achieving high precision requires fine threshold resolution near 1.0. This scenario
-    tests whether candidate threshold grids place sufficient resolution in the extreme
-    tail.
-    """
-
-    name: str = "power_law_tail_leakage"
-    description: str = (
-        "Dense retrieval power-law tail testing fine upper-threshold "
-        "quantile grid resolution."
-    )
-    pop_size: int | None = 100000
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population modeling dense retrieval with power-law distractor
-        leakage.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-
-        n_pos = int(0.02 * pop_size)
-        n_neg = pop_size - n_pos
-
-        scores = np.empty(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-        oracle[:n_pos] = True
-
-        # Positives concentrated near 1.0 (median ~ 0.985)
-        scores[:n_pos] = rng.beta(15.0, 0.5, size=n_pos)
-
-        # Negatives: 99% low scores, 1% power-law distractors in [0.95, 1.0]
-        n_neg_distractors = int(0.01 * n_neg)
-        n_neg_normal = n_neg - n_neg_distractors
-
-        scores[n_pos : n_pos + n_neg_normal] = rng.beta(0.5, 5.0, size=n_neg_normal)
-        u = rng.uniform(0.0, 1.0, size=n_neg_distractors)
-        scores[n_pos + n_neg_normal :] = 0.95 + 0.05 * (u ** (1.0 / 4.0))
-
-        return Population(scores=scores, labels=oracle)
-
-
-@dataclass(kw_only=True)
-class ProxyMiscalibrated(BaseScenario):
-    """
-    Proxy Miscalibration with Sub-population Blindspot.
-
-    The proxy model is accurate for most data, but has a blindspot on a sub-population
-    of true positives that receive low scores in [0.0, 0.2]. The blindspot size is
-    scaled so that it holds (1 - gamma_R + margin_gap) of all positives.
-
-    If an algorithm drops these low scores, it achieves recall below the target.
-    This forces the algorithm to detect the blindspot and send it to the oracle.
-    """
-
-    name: str = "proxy_miscalibrated"
-    description: str = (
-        "Proxy model blindspot scaled to hold (1 - gamma_R + "
-        "margin_gap) of positives in [0.0, 0.2]."
-    )
-    pop_size: int | None = 100000
-    gamma_R: float = 0.8
-    margin_gap: float = 0.02
-
-    def generate_population(self, **kwargs) -> Population:
-        """
-        Generates a population with a low-score blindspot scaled to target recall.
-        """
-        rng = np.random.default_rng(self.seed)
-        pop_size = self.pop_size if self.pop_size is not None else 100000
-        eff_gamma_R = kwargs.get("gamma_R", self.gamma_R)
-
-        # Desired fraction of all true positives located in blindspot
-        f_blind = min(0.5, max(0.04, (1.0 - eff_gamma_R) + self.margin_gap))
-
-        # Main population has 50% positive rate.
-        # Total positives = 0.5 * n_main + n_blindspot
-        # n_blindspot / (0.5 * n_main + n_blindspot) = f_blind
-        # => n_main = pop_size * (1 - f_blind) / (1 - 0.5 * f_blind)
-        n_main = int(pop_size * (1.0 - f_blind) / (1.0 - 0.5 * f_blind))
-        n_blindspot = pop_size - n_main
-
-        scores = np.zeros(pop_size, dtype=np.float64)
-        oracle = np.zeros(pop_size, dtype=bool)
-
-        # Main population: 50% positive rate
-        # Positives in [0.4, 1.0], negatives in [0.0, 0.4]
-        main_oracle = rng.random(size=n_main) < 0.5
-        oracle[:n_main] = main_oracle
-        scores[:n_main] = np.where(
-            main_oracle,
-            rng.uniform(0.4, 1.0, size=n_main),
-            rng.uniform(0.0, 0.4, size=n_main),
-        )
-
-        # Blindspot: 100% positive rate with very low scores in [0.0, 0.2]
-        oracle[n_main:] = True
-        scores[n_main:] = rng.uniform(0.0, 0.2, size=n_blindspot)
-
-        # Randomly shuffle items to prevent ordering artifacts
-        perm = rng.permutation(pop_size)
-        return Population(scores=scores[perm], labels=oracle[perm])
 
 
 def _read_dataframe(path: Path) -> pd.DataFrame:
@@ -1099,19 +620,17 @@ def get_scenario(
 
     Args:
         name: Scenario name or benchmark dataset name.
-              - Synthetic: 'uninformative_proxy_floor', 'benign', etc.
               - SUPG: 'onto', 'imagenet', 'jackson', 'tacred'
                 (or with optional 'supg_' prefix, e.g. 'supg_onto').
               - Document benchmarks: 'court', 'review', 'screenplay', 'wiki' (BARGAIN)
                 or 'pubmed', 'big_patent', 'gov_report' (ScaleDoc).
                 Prefixes like 'bargain_' or 'scaledoc_' are also accepted.
         query_id: Query identifier for document benchmarks (e.g. '0', '1', '12').
-                  Defaults to '0'. Ignored for synthetic and SUPG scenarios.
+                  Defaults to '0'. Ignored for SUPG scenarios.
         oracle_model: Model identifier for oracle ground truth
-                      (default: 'azure/gpt-5.6-terra'). Ignored for synthetic
-                      and SUPG scenarios.
+                      (default: 'azure/gpt-5.6-terra'). Ignored for SUPG scenarios.
         proxy_model: Model identifier for proxy scores (default: 'azure/gpt-5.6-luna').
-                     Ignored for synthetic and SUPG scenarios.
+                     Ignored for SUPG scenarios.
         **kwargs: Additional keyword arguments forwarded to the scenario dataclass
                   constructor (e.g. pop_size, seed, data_path, data_dir).
 
@@ -1123,23 +642,7 @@ def get_scenario(
     """
     clean_name = name.lower().strip()
 
-    # 1. Synthetic scenarios
-    synthetic_factories: dict[str, type[BaseScenario]] = {
-        "uninformative_proxy_floor": UninformativeProxyFloor,
-        "precision_tail_overfit": PrecisionTailOverfit,
-        "proxy_miscalibrated": ProxyMiscalibrated,
-        "precision_boundary_critical_margin": PrecisionBoundaryCriticalMargin,
-        "recall_boundary_critical_margin": RecallBoundaryCriticalMargin,
-        "trapped_head": TrappedHead,
-        "benign": Benign,
-        "semantic_join_needle": SemanticJoinNeedle,
-        "discrete_lexical_gate": DiscreteLexical,
-        "power_law_tail_leakage": PowerLawTailLeakage,
-    }
-    if clean_name in synthetic_factories:
-        return synthetic_factories[clean_name](**kwargs)
-
-    # 2. Extract dataset base name using regex (stripping optional source prefix)
+    # Extract dataset base name using regex (stripping optional source prefix)
     m = re.match(r"^(?:(?:supg|scaledoc|bargain)_)?([a-z0-9_]+)$", clean_name)
     if m:
         base_name = m.group(1)
@@ -1178,21 +681,9 @@ def get_scenario(
 
 def list_scenarios() -> list[str]:
     """Returns a sorted list of all canonical scenario identifiers."""
-    synthetic_names = [
-        "uninformative_proxy_floor",
-        "precision_tail_overfit",
-        "proxy_miscalibrated",
-        "precision_boundary_critical_margin",
-        "recall_boundary_critical_margin",
-        "trapped_head",
-        "benign",
-        "semantic_join_needle",
-        "discrete_lexical_gate",
-        "power_law_tail_leakage",
-    ]
     supg_names = list(SUPG_DATASETS.keys())
     benchmark_names = sorted(DATASET_GROUPS.keys())
-    return sorted(synthetic_names + supg_names + benchmark_names)
+    return sorted(supg_names + benchmark_names)
 
 
 def get_available_queries(
@@ -1202,8 +693,8 @@ def get_available_queries(
     """Returns available query identifiers for a benchmark dataset.
 
     Checks on-disk oracle directories first; if none are found, inspects
-    experiments/data/{group}/query.json. Returns an empty list for non-benchmark
-    scenarios (e.g. synthetic or SUPG).
+    experiments/data/{group}/query.json. Returns an empty list for SUPG
+    scenarios.
     """
     clean_name = name.lower().strip()
     match = re.match(r"^(?:(?:supg|scaledoc|bargain)_)?([a-z0-9_]+)$", clean_name)
@@ -1255,17 +746,8 @@ __all__ = [
     "BaseScenario",
     "TabularDataset",
     "FileDataset",
-    "UninformativeProxyFloor",
-    "PrecisionTailOverfit",
-    "Benign",
-    "ProxyMiscalibrated",
-    "SemanticJoinNeedle",
-    "DiscreteLexical",
-    "PrecisionBoundaryCriticalMargin",
-    "RecallBoundaryCriticalMargin",
-    "TrappedHead",
-    "PowerLawTailLeakage",
     "DocumentBenchmarkDataset",
+    "Benign",
     "get_scenario",
     "list_scenarios",
     "get_available_queries",

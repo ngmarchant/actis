@@ -9,7 +9,6 @@ from experiments.runners import (
 from experiments.scenarios import (
     Benign,
     DocumentBenchmarkDataset,
-    PrecisionTailOverfit,
 )
 
 
@@ -18,7 +17,6 @@ def test_scenario_to_dict_and_hashing():
     scen2 = Benign(pop_size=1000, seed=42)
     scen3 = Benign(pop_size=2000, seed=42)
     scen4 = Benign(pop_size=1000, seed=99)
-    scen5 = PrecisionTailOverfit(pop_size=1000, seed=42)
 
     # Deterministic
     assert scen1.config_hash() == scen2.config_hash()
@@ -27,9 +25,6 @@ def test_scenario_to_dict_and_hashing():
     # Changing pop_size or seed alters hash
     assert scen1.config_hash() != scen3.config_hash()
     assert scen1.config_hash() != scen4.config_hash()
-
-    # Different scenario class alters hash
-    assert scen1.config_hash() != scen5.config_hash()
 
     # results_subpath
     assert scen1.results_subpath() == Path("benign") / f"benign_{scen1.config_hash()}"
