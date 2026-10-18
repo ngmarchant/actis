@@ -332,32 +332,6 @@ def main():
                 parser.error(str(e))
 
     runners: list[BaseFilterRunner] = [
-        # ACTISRunner(
-        #     name="actis_static",
-        #     num_thresholds=args.num_thresholds,
-        #     num_thresholds_upper=args.num_thresholds_upper,
-        #     sampling_method="wor",
-        #     adaptive=False,
-        #     initial_sample_size=args.sample_size,
-        #     batch_size=args.sample_size,
-        #     max_sample_size=args.sample_size,
-        #     min_positives=args.min_positives,
-        #     power_law_quantiles=args.power_law_quantiles,
-        # ),
-        # ACTISRunner(
-        #     name="actis_adaptive_is",
-        #     num_thresholds=args.num_thresholds,
-        #     num_thresholds_upper=args.num_thresholds_upper,
-        #     sampling_method="is",
-        #     alpha=args.alpha,
-        #     power_law_quantiles=args.power_law_quantiles,
-        #     conf_seq="finite",
-        #     adaptive=True,
-        #     initial_sample_size=args.sample_size,
-        #     batch_size=args.batch_size,
-        #     max_sample_size=args.max_sample_size,
-        #     min_positives=args.min_positives,
-        # ),
         ACTISRunner(
             name="actis_adaptive_is_asymptotic",
             num_thresholds=args.num_thresholds,
