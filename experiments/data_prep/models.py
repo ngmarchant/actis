@@ -484,6 +484,52 @@ class BaseLiteLLMModel:
                         return int(params["max_completion_tokens"])
         return 1
 
+    def _has_model_param(self, param_name: str) -> bool:
+        """Checks if a parameter is specified in litellm_kwargs or router deployment."""
+        if param_name in self.litellm_kwargs:
+            return True
+        if self.router is not None:
+            for m in getattr(self.router, "model_list", []):
+                if not isinstance(m, dict):
+                    continue
+                m_name = m.get("model_name")
+                target = (
+                    m.get("litellm_params", {}).get("model")
+                    if isinstance(m.get("litellm_params"), dict)
+                    else None
+                )
+                if self.model in (m_name, target):
+                    params = m.get("litellm_params", {}) or {}
+                    if param_name in params:
+                        return True
+        return False
+
+    @property
+    def _top_logprobs(self) -> int:
+        """Resolves top_logprobs for token logprob extraction.
+
+        Checks litellm_kwargs first, then router deployment litellm_params.
+        Defaults to 5 for Azure models (Azure OpenAI max allowed is 5) and 20
+        for others.
+        """
+        if "top_logprobs" in self.litellm_kwargs:
+            return int(self.litellm_kwargs["top_logprobs"])
+        if self.router is not None:
+            for m in getattr(self.router, "model_list", []):
+                if not isinstance(m, dict):
+                    continue
+                m_name = m.get("model_name")
+                target = (
+                    m.get("litellm_params", {}).get("model")
+                    if isinstance(m.get("litellm_params"), dict)
+                    else None
+                )
+                if self.model in (m_name, target):
+                    params = m.get("litellm_params", {}) or {}
+                    if "top_logprobs" in params:
+                        return int(params["top_logprobs"])
+        return 5 if self.model.startswith("azure/") else 20
+
     def estimate_cost(self, items: list[Any], query: Any) -> CostEstimate:
         """Estimates total tokens and cost across items."""
         total_items = len(items)
@@ -698,11 +744,19 @@ class LiteLLMOracle(BaseLiteLLMModel, BaseOracle):
         semaphore: asyncio.Semaphore,
     ) -> tuple[bool | None, float | None, dict[str, Any]]:
         try:
+            extra_call_kwargs: dict[str, Any] = {"logprobs": True}
+            if not self._has_model_param("max_tokens") and not self._has_model_param(
+                "max_completion_tokens"
+            ):
+                extra_call_kwargs["max_tokens"] = self._expected_completion_tokens
+            if not self._has_model_param("top_logprobs"):
+                extra_call_kwargs["top_logprobs"] = self._top_logprobs
+
             response = await self._call_litellm(
                 item=item,
                 query=query,
                 semaphore=semaphore,
-                logprobs=True,
+                **extra_call_kwargs,
             )
             content = (response.choices[0].message.content or "").strip().lower()
             pos_target = self.positive_label.strip().lower()
@@ -785,11 +839,19 @@ class LiteLLMProxy(BaseLiteLLMModel, BaseProxy):
         semaphore: asyncio.Semaphore,
     ) -> tuple[float | None, dict[str, Any]]:
         try:
+            extra_call_kwargs: dict[str, Any] = {"logprobs": True}
+            if not self._has_model_param("max_tokens") and not self._has_model_param(
+                "max_completion_tokens"
+            ):
+                extra_call_kwargs["max_tokens"] = self._expected_completion_tokens
+            if not self._has_model_param("top_logprobs"):
+                extra_call_kwargs["top_logprobs"] = self._top_logprobs
+
             response = await self._call_litellm(
                 item=item,
                 query=query,
                 semaphore=semaphore,
-                logprobs=True,
+                **extra_call_kwargs,
             )
             score = _extract_litellm_binary_probability(
                 response,

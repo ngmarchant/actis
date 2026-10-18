@@ -143,3 +143,18 @@ model_list:
       supports_none_reasoning_effort: true
       supports_xhigh_reasoning_effort: true
       supports_minimal_reasoning_effort: false
+
+  - model_name: openai/llama3.2:1b-instruct-fp16
+    litellm_params:
+      model: openai/llama3.2:1b-instruct-fp16
+      api_base: os.environ/OPENAI_API_BASE
+      api_key: os.environ/OPENAI_API_KEY
+      max_tokens: 1
+      top_logprobs: 20
+    model_info:
+      mode: chat
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+      max_input_tokens: 128000
+      max_output_tokens: 2048
+      max_tokens: 2048
