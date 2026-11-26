@@ -1,0 +1,599 @@
+"""Data ingestion and preprocessing loaders for ScaleDoc datasets.
+
+Supports:
+- PubMed (PubMed 200k RCT across dev, test, and train splits)
+- BigPatent (NortheasternUniversity/big_patent across CPC classifications a-y)
+- GovReport (ccdv/govreport-summarization)
+- Query loading from ScaleDoc query.json
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import re
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+from datasets import Dataset, load_dataset
+
+PUBMED_BASE_URL = "https://github.com/Franck-Dernoncourt/pubmed-rct/raw/refs/heads/master/PubMed_200k_RCT"
+SCALEDOC_QUERY_URL = "https://raw.githubusercontent.com/Seurgul/ScaleDoc/refs/heads/main/dataset/query.json"
+SUPG_BASE_URL = (
+    "https://raw.githubusercontent.com/stanford-futuredata/supg/master/data"
+)
+DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "scaledoc"
+DEFAULT_SUPG_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "supg"
+DEFAULT_QUERY_FILE = DEFAULT_DATA_DIR / "query.json"
+SUPG_DATASET_FILES = {
+    "onto": "onto/source.csv",
+    "imagenet": "imagenet/source.csv",
+    "jackson": "jackson/2017-12-17.feather",
+    "tacred": "tacred/source.csv",
+}
+BARGAIN_DATASET_HANDLES = {
+    "screenplay": "gufukuro/movie-scripts-corpus",
+    "review": "najzeko/steam-reviews-2021",
+}
+DATASET_GROUPS = {
+    "pubmed": "scaledoc",
+    "big_patent": "scaledoc",
+    "gov_report": "scaledoc",
+    "court": "bargain",
+    "screenplay": "bargain",
+    "wiki": "bargain",
+    "review": "bargain",
+}
+
+
+def parse_pubmed_text(text_or_path: str | Path, n: int = 10000) -> list[str]:
+    """
+    Parses abstracts from a PubMed RCT text file, following ScaleDoc preprocessing.
+
+    Strips PMIDs (###<id>) and section labels (OBJECTIVE, BACKGROUND, METHODS,
+    RESULTS, CONCLUSIONS), grouping sentences into full abstract documents.
+    """
+    elim = ["OBJECTIVE", "BACKGROUND", "METHODS", "RESULTS", "CONCLUSIONS"]
+    id_pattern = re.compile(r"^###\d+")
+
+    if isinstance(text_or_path, (str, Path)) and os.path.isfile(text_or_path):
+        with open(text_or_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    else:
+        lines = str(text_or_path).splitlines(keepends=True)
+
+    documents: list[str] = []
+    current_doc: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if current_doc:
+                documents.append(" ".join(current_doc).strip())
+                current_doc = []
+                if len(documents) >= n:
+                    break
+            continue
+
+        if id_pattern.match(stripped):
+            continue
+
+        # Check for section header match
+        matched_header = None
+        for header in elim:
+            if stripped.startswith(header):
+                matched_header = header
+                break
+
+        if matched_header is not None:
+            clean_line = stripped[len(matched_header) :].lstrip("\t :.-")
+        else:
+            clean_line = stripped
+
+        if clean_line:
+            current_doc.append(clean_line)
+
+    if current_doc and len(documents) < n:
+        documents.append(" ".join(current_doc).strip())
+
+    return documents[:n]
+
+
+def load_pubmed_documents(
+    n: int = 10000,
+    split: str = "train",
+    cache_dir: str | Path | None = None,
+    local_path: str | Path | None = None,
+) -> Dataset:
+    """
+    Loads PubMed RCT documents as a HuggingFace Dataset.
+
+    Args:
+        n: Number of document abstracts to return.
+        split: 'train', 'dev', or 'test' (default: 'train').
+        cache_dir: Directory to cache downloaded raw files.
+        local_path: Optional explicit local file path to raw text.
+
+    Returns:
+        Dataset with columns ['id', 'content'].
+    """
+    if local_path and Path(local_path).exists():
+        raw_file = Path(local_path)
+    else:
+        cache_path = Path(cache_dir or DEFAULT_DATA_DIR / "pubmed")
+        cache_path.mkdir(parents=True, exist_ok=True)
+        raw_file = cache_path / f"{split}.txt"
+
+        if not raw_file.exists():
+            if split in ("dev", "test"):
+                url = f"{PUBMED_BASE_URL}/{split}.txt"
+                print(f"Downloading PubMed {split} split from {url}...")
+                urllib.request.urlretrieve(url, raw_file)
+            elif split == "train":
+                archive_file = cache_path / "train.7z"
+                if not archive_file.exists():
+                    url = f"{PUBMED_BASE_URL}/train.7z"
+                    print(f"Downloading PubMed train split from {url}...")
+                    urllib.request.urlretrieve(url, archive_file)
+                import py7zr
+
+                print(f"Extracting {archive_file}...")
+                with py7zr.SevenZipFile(archive_file, mode="r") as z:
+                    z.extractall(path=cache_path)
+            else:
+                raise ValueError(
+                    f"Unknown split '{split}' for PubMed. "
+                    "Choose 'train', 'dev', or 'test'."
+                )
+
+    docs = parse_pubmed_text(raw_file, n=n)
+    if len(docs) < n:
+        print(
+            f"Warning: Split '{split}' for PubMed only contains {len(docs)} documents "
+            f"(fewer than requested n={n}). Note that 'dev' and 'test' splits only "
+            "contain 2,500 documents each; use split='train' for up to "
+            "~195,000 documents."
+        )
+
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(docs))),
+            "content": docs,
+        }
+    )
+
+
+def _download_kaggle_dataset(
+    dataset_name: str,
+    cache_dir: str | Path | None,
+) -> Path:
+    """Downloads a Kaggle dataset into a caller-controlled cache directory."""
+    try:
+        import kagglehub
+    except ImportError as error:
+        raise ImportError(
+            "Loading this dataset requires kagglehub. Install the 'experiments' "
+            "extra first."
+        ) from error
+
+    if cache_dir is not None:
+        os.environ["KAGGLEHUB_CACHE"] = str(Path(cache_dir).resolve())
+    return Path(kagglehub.dataset_download(BARGAIN_DATASET_HANDLES[dataset_name]))
+
+
+def load_screenplay_documents(
+    n: int = 10000,
+    seed: int = 42,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """Loads one movie screenplay per row from Kaggle's movie scripts corpus."""
+    dataset_dir = _download_kaggle_dataset("screenplay", cache_dir)
+    screenplay_dir = (
+        dataset_dir / "screenplay_data" / "data" / "raw_texts" / "raw_texts"
+    )
+    if not screenplay_dir.is_dir():
+        raise FileNotFoundError(
+            "Screenplay text directory not found at "
+            f"'{screenplay_dir}'. The Kaggle dataset layout may have changed."
+        )
+
+    files = sorted(screenplay_dir.glob("*.txt"))
+    if n < len(files):
+        rng = random.Random(seed)
+        files = rng.sample(files, n)
+    documents = [file.read_text(encoding="utf-8", errors="replace") for file in files]
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
+
+
+def load_review_documents(
+    n: int = 10000,
+    seed: int = 42,
+    cache_dir: str | Path | None = None,
+    chunk_size: int = 250_000,
+) -> Dataset:
+    """Loads Steam review text from Kaggle's Steam Reviews 2021 dataset.
+
+    Filters for English reviews and draws a uniform random subsample of size n
+    using streaming reservoir sampling to minimize memory usage on large CSV files.
+    """
+    dataset_dir = _download_kaggle_dataset("review", cache_dir)
+    reviews_file = dataset_dir / "steam_reviews.csv"
+    if not reviews_file.is_file():
+        raise FileNotFoundError(
+            "Steam review CSV not found at "
+            f"'{reviews_file}'. The Kaggle dataset layout may have changed."
+        )
+
+    # Detect available columns
+    header_df = pd.read_csv(reviews_file, nrows=0)
+    if "review" not in header_df.columns:
+        raise ValueError(f"Expected a 'review' column in '{reviews_file}'.")
+    has_language = "language" in header_df.columns
+
+    cols = ["review", "language"] if has_language else ["review"]
+
+    rng = random.Random(seed)
+    reservoir: list[str] = []
+    total_seen = 0
+
+    for chunk in pd.read_csv(
+        reviews_file,
+        usecols=cols,
+        chunksize=chunk_size,
+        dtype=str,
+        on_bad_lines="skip",
+        encoding="utf-8",
+    ):  # ty: ignore[no-matching-overload]
+        if has_language:
+            mask = (chunk["language"] == "english") & chunk["review"].notna()
+        else:
+            mask = chunk["review"].notna()
+
+        reviews = chunk.loc[mask, "review"]
+        reviews = reviews[reviews.str.strip() != ""]
+        items = reviews.tolist()
+
+        for item in items:
+            total_seen += 1
+            if len(reservoir) < n:
+                reservoir.append(item)
+            else:
+                j = rng.randint(0, total_seen - 1)
+                if j < n:
+                    reservoir[j] = item
+
+    rng.shuffle(reservoir)
+
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(reservoir))),
+            "content": reservoir,
+        }
+    )
+
+
+def load_wiki_documents(
+    n: int = 10000,
+    seed: int = 42,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """Loads one Wikipedia Talk-page conversation per row from ConvoKit."""
+    try:
+        from convokit import Corpus, download
+    except ImportError as error:
+        raise ImportError(
+            "Loading the wiki dataset requires convokit. Install the "
+            "'experiments' extra first."
+        ) from error
+
+    if cache_dir is None:
+        corpus_path = download("wiki-corpus")
+    else:
+        corpus_path = download("wiki-corpus", data_dir=str(cache_dir))
+    corpus = Corpus(filename=corpus_path)
+    conv_ids = sorted(corpus.get_conversation_ids())
+    rng = random.Random(seed)
+    rng.shuffle(conv_ids)
+
+    documents: list[str] = []
+    for cid in conv_ids:
+        conversation = corpus.get_conversation(cid)
+        text = "\n".join(
+            utterance.text
+            for utterance in conversation.iter_utterances()
+            if utterance.text
+        )
+        if text:
+            documents.append(text)
+        if len(documents) >= n:
+            break
+
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
+
+
+def load_court_documents(
+    path: str | Path,
+    n: int = 10000,
+    seed: int = 42,
+    text_column: str = "opinion_text",
+) -> Dataset:
+    """Loads Supreme Court opinions from a local CourtListener-derived CSV file."""
+
+    opinions_file = Path(path)
+    if not opinions_file.is_file():
+        raise FileNotFoundError(f"Court opinion CSV not found at '{opinions_file}'.")
+
+    df = pd.read_csv(opinions_file, usecols=[text_column], encoding="utf-8")  # ty: ignore[no-matching-overload]
+    series = df[text_column].dropna().astype(str)
+    series = series[series.str.strip() != ""]
+    if n < len(series):
+        series = series.sample(n=n, random_state=seed)
+    documents: list[str] = series.tolist()
+
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(documents))),
+            "content": documents,
+        }
+    )
+
+
+def load_bigpatent_documents(
+    n: int = 10000,
+    split: str = "train",
+    seed: int = 42,
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """
+    Loads BigPatent abstracts across 9 CPC categories as a HuggingFace Dataset.
+
+    Args:
+        n: Total number of documents across all categories.
+        split: Dataset split ('train', 'validation', 'test').
+        seed: Seed for sampling across codes.
+        cache_dir: Optional cache directory for HuggingFace downloads.
+
+    Returns:
+        Dataset with columns ['id', 'content'].
+    """
+    codes = ["a", "b", "c", "d", "e", "f", "g", "h", "y"]
+    docs_per_code = (n + len(codes) - 1) // len(codes)
+    rng = random.Random(seed)
+    cache_dir_str = str(cache_dir) if cache_dir is not None else None
+
+    all_docs: list[str] = []
+    for code in codes:
+        try:
+            ds = load_dataset(
+                "NortheasternUniversity/big_patent",
+                code,
+                split=split,
+                cache_dir=cache_dir_str,
+                trust_remote_code=True,
+            )
+        except Exception:
+            ds = load_dataset(
+                "big_patent",
+                code,
+                split=split,
+                cache_dir=cache_dir_str,
+                trust_remote_code=True,
+            )
+
+        abstracts = ds["abstract"]
+        k = min(docs_per_code, len(abstracts))
+        sampled = rng.sample(abstracts, k)
+        all_docs.extend(sampled)
+
+    rng.shuffle(all_docs)
+    selected_docs = all_docs[:n]
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(selected_docs))),
+            "content": selected_docs,
+        }
+    )
+
+
+def load_govreport_documents(
+    n: int = 10000,
+    split: str = "train",
+    cache_dir: str | Path | None = None,
+) -> Dataset:
+    """
+    Loads GovReport document summaries as a HuggingFace Dataset.
+
+    Args:
+        n: Number of documents to return.
+        split: Dataset split ('train', 'validation', 'test').
+        cache_dir: Optional cache directory for HuggingFace downloads.
+
+    Returns:
+        Dataset with columns ['id', 'content'].
+    """
+    cache_dir_str = str(cache_dir) if cache_dir is not None else None
+    ds = load_dataset(
+        "ccdv/govreport-summarization",
+        split=split,
+        cache_dir=cache_dir_str,
+    )
+    summaries = ds["summary"][:n]
+    return Dataset.from_dict(
+        {
+            "id": list(range(len(summaries))),
+            "content": summaries,
+        }
+    )
+
+
+def load_queries(
+    dataset_name: str,
+    query_file: str | Path,
+) -> list[dict[str, Any]]:
+    """
+    Loads query definitions for a given dataset from a JSON file or URL.
+
+    Args:
+        dataset_name: Name of dataset ('pubmed', 'big_patent', 'gov_report', etc.).
+        query_file: Path or URL to a JSON query definition file.
+
+    Returns:
+        List of dicts with 'q_id' and 'query'.
+    """
+    query_file_str = str(query_file)
+    if query_file_str.startswith(("http://", "https://")):
+        req = urllib.request.Request(
+            query_file_str, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    else:
+        path = Path(query_file)
+        if not path.exists():
+            raise FileNotFoundError(f"Query file not found at '{path}'.")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+    # Normalize name keys
+    clean_name = dataset_name.lower().replace("-", "_")
+    base_key = None
+    if clean_name in data:
+        base_key = clean_name
+    else:
+        for k in data:
+            if k.replace("_", "") == clean_name.replace("_", ""):
+                base_key = k
+                break
+
+    if base_key is None:
+        raise KeyError(
+            f"Dataset '{dataset_name}' not found in query definitions. "
+            f"Available keys: {list(data.keys())}"
+        )
+
+    # Base queries (q_id: 0, 1, 2, ...)
+    results: list[dict[str, Any]] = [
+        {"q_id": str(item["q_id"]), "query": item["query"]} for item in data[base_key]
+    ]
+
+    # Check for extended queries under f"{base_key}_ext" (q_id: 0_ext, 1_ext, ...)
+    ext_key = f"{base_key}_ext"
+    if ext_key in data:
+        for item in data[ext_key]:
+            results.append(
+                {
+                    "q_id": f"{item['q_id']}_ext",
+                    "query": item["query"],
+                }
+            )
+
+    return results
+
+
+def download_supg_dataset(
+    dataset_name: str,
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> Path:
+    """Downloads a pre-labeled SUPG dataset file from stanford-futuredata/supg.
+
+    Args:
+        dataset_name: SUPG dataset identifier ('onto', 'imagenet', 'jackson', or
+            'tacred', optionally prefixed with 'supg_').
+        data_dir: Root directory for SUPG datasets (defaults to
+            ``experiments/data/supg``).
+        force: If True, re-downloads even if the cached file already exists.
+
+    Returns:
+        Path to the local cached dataset file.
+
+    Raises:
+        ValueError: If `dataset_name` is not a recognized SUPG dataset.
+    """
+    clean_name = dataset_name.lower().strip().removeprefix("supg_")
+    if clean_name not in SUPG_DATASET_FILES:
+        raise ValueError(
+            f"Unknown SUPG dataset '{dataset_name}'. "
+            f"Must be one of: {sorted(SUPG_DATASET_FILES)}."
+        )
+
+    rel_path = SUPG_DATASET_FILES[clean_name]
+    target_path = Path(data_dir or DEFAULT_SUPG_DATA_DIR) / rel_path
+    if not force and target_path.exists():
+        return target_path
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    url = f"{SUPG_BASE_URL}/{rel_path}"
+    tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req) as resp, open(tmp_path, "wb") as out:
+            out.write(resp.read())
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    return target_path
+
+
+def load_supg_dataset(
+    dataset_name: str,
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Loads a pre-labeled SUPG benchmark dataset into a pandas DataFrame.
+
+    Downloads the dataset from ``stanford-futuredata/supg`` on GitHub if not
+    already cached under ``data_dir``.
+    """
+    path = download_supg_dataset(dataset_name, data_dir=data_dir, force=force)
+    if path.suffix.lower() == ".feather":
+        return pd.read_feather(path)
+    return pd.read_csv(path)
+
+
+def load_onto_dataset(
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Loads the SUPG OntoNotes benchmark DataFrame."""
+    return load_supg_dataset("onto", data_dir=data_dir, force=force)
+
+
+def load_imagenet_dataset(
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Loads the SUPG ImageNet benchmark DataFrame."""
+    return load_supg_dataset("imagenet", data_dir=data_dir, force=force)
+
+
+def load_jackson_dataset(
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Loads the SUPG Jackson benchmark DataFrame."""
+    return load_supg_dataset("jackson", data_dir=data_dir, force=force)
+
+
+def load_tacred_dataset(
+    data_dir: str | Path | None = None,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Loads the SUPG TACRED benchmark DataFrame."""
+    return load_supg_dataset("tacred", data_dir=data_dir, force=force)

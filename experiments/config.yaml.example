@@ -1,0 +1,160 @@
+# ==============================================================================
+# LiteLLM Configuration (config.yaml)
+#
+# Copy this file to 'experiments/config.yaml' and customize for your Azure deployment(s):
+#   cp experiments/config.yaml.example experiments/config.yaml
+#
+# Allows setting region-specific pricing per deployment. model_name must match
+# litellm_params.model (the provider-qualified name, e.g. "azure/gpt-4o") so
+# LiteLLMOracle/LiteLLMProxy can be constructed with model=<that name> directly.
+# ==============================================================================
+
+model_list:
+  - model_name: azure/gpt-5.6-terra
+    litellm_params:
+      model: azure/gpt-5.6-terra
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      reasoning_effort: "none"
+      max_tokens: 16
+      top_logprobs: 5
+    model_info:
+      cache_creation_input_token_cost: 2.5e-06
+      cache_creation_input_token_cost_above_272k_tokens: 5.0e-06
+      cache_creation_input_token_cost_above_272k_tokens_flex: 2.5e-06
+      cache_creation_input_token_cost_priority: 5.0e-06
+      cache_creation_input_token_cost_above_272k_tokens_priority: 1.0e-05
+      cache_creation_input_token_cost_flex: 1.25e-06
+      cache_read_input_token_cost: 2.0e-07
+      cache_read_input_token_cost_above_272k_tokens: 4.0e-07
+      cache_read_input_token_cost_above_272k_tokens_flex: 2.0e-07
+      cache_read_input_token_cost_priority: 4.0e-07
+      cache_read_input_token_cost_above_272k_tokens_priority: 8.0e-07
+      cache_read_input_token_cost_flex: 1.0e-07
+      deprecation_date: '2028-01-11'
+      input_cost_per_token: 2.0e-06
+      input_cost_per_token_above_272k_tokens: 4.0e-06
+      input_cost_per_token_above_272k_tokens_flex: 2.0e-06
+      input_cost_per_token_priority: 4.0e-06
+      input_cost_per_token_above_272k_tokens_priority: 8.0e-06
+      input_cost_per_token_flex: 1.0e-06
+      max_input_tokens: 272000
+      max_output_tokens: 128000
+      max_tokens: 128000
+      mode: chat
+      output_cost_per_token: 1.2e-05
+      output_cost_per_token_above_272k_tokens: 1.8e-05
+      output_cost_per_token_above_272k_tokens_flex: 9.0e-06
+      output_cost_per_token_priority: 2.4e-05
+      output_cost_per_token_above_272k_tokens_priority: 3.6e-05
+      output_cost_per_token_flex: 6.0e-06
+      search_context_cost_per_query:
+        search_context_size_high: 0.01
+        search_context_size_low: 0.01
+        search_context_size_medium: 0.01
+      source: https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20armRegionName%20eq%20'eastus'%20and%20priceType%20eq%20'Consumption'
+      supported_endpoints:
+        - /v1/chat/completions
+        - /v1/batch
+        - /v1/responses
+      supported_modalities:
+        - text
+        - image
+      supported_output_modalities:
+        - text
+      supports_function_calling: true
+      supports_native_streaming: true
+      supports_parallel_function_calling: true
+      supports_pdf_input: true
+      supports_prompt_caching: true
+      supports_reasoning: true
+      supports_response_schema: true
+      supports_system_messages: true
+      supports_tool_choice: true
+      supports_vision: true
+      supports_web_search: true
+      supports_none_reasoning_effort: true
+      supports_xhigh_reasoning_effort: true
+      supports_minimal_reasoning_effort: false
+
+  - model_name: azure/gpt-5.6-luna
+    litellm_params:
+      model: azure/gpt-5.6-luna
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      reasoning_effort: "none"
+      max_tokens: 16
+      top_logprobs: 5
+    model_info:
+      cache_creation_input_token_cost: 2.5e-07
+      cache_creation_input_token_cost_above_272k_tokens: 5e-07
+      cache_creation_input_token_cost_above_272k_tokens_flex: 2.5e-07
+      cache_creation_input_token_cost_priority: 5e-07
+      cache_creation_input_token_cost_above_272k_tokens_priority: 1e-06
+      cache_creation_input_token_cost_flex: 1.25e-07
+      cache_read_input_token_cost: 2e-08
+      cache_read_input_token_cost_above_272k_tokens: 4e-08
+      cache_read_input_token_cost_above_272k_tokens_flex: 2e-08
+      cache_read_input_token_cost_priority: 4e-08
+      cache_read_input_token_cost_above_272k_tokens_priority: 8e-08
+      cache_read_input_token_cost_flex: 1e-08
+      deprecation_date: '2028-01-11'
+      input_cost_per_token: 2e-07
+      input_cost_per_token_above_272k_tokens: 4e-07
+      input_cost_per_token_above_272k_tokens_flex: 2e-07
+      input_cost_per_token_priority: 4e-07
+      input_cost_per_token_above_272k_tokens_priority: 8e-07
+      input_cost_per_token_flex: 1e-07
+      max_input_tokens: 272000
+      max_output_tokens: 128000
+      max_tokens: 128000
+      mode: chat
+      output_cost_per_token: 1.2e-06
+      output_cost_per_token_above_272k_tokens: 1.8e-06
+      output_cost_per_token_above_272k_tokens_flex: 9e-07
+      output_cost_per_token_priority: 2.4e-06
+      output_cost_per_token_above_272k_tokens_priority: 3.6e-06
+      output_cost_per_token_flex: 6e-07
+      search_context_cost_per_query:
+        search_context_size_high: 0.01
+        search_context_size_low: 0.01
+        search_context_size_medium: 0.01
+      source: https://prices.azure.com/api/retail/prices?$filter=serviceName%20eq%20'Foundry%20Models'%20and%20armRegionName%20eq%20'eastus'%20and%20priceType%20eq%20'Consumption'
+      supported_endpoints:
+        - /v1/chat/completions
+        - /v1/batch
+        - /v1/responses
+      supported_modalities:
+        - text
+        - image
+      supported_output_modalities:
+        - text
+      supports_function_calling: true
+      supports_native_streaming: true
+      supports_parallel_function_calling: true
+      supports_pdf_input: true
+      supports_prompt_caching: true
+      supports_reasoning: true
+      supports_response_schema: true
+      supports_system_messages: true
+      supports_tool_choice: true
+      supports_vision: true
+      supports_web_search: true
+      supports_none_reasoning_effort: true
+      supports_xhigh_reasoning_effort: true
+      supports_minimal_reasoning_effort: false
+
+  - model_name: openai/llama3.2:1b-instruct-fp16
+    litellm_params:
+      model: openai/llama3.2:1b-instruct-fp16
+      api_base: os.environ/OPENAI_API_BASE
+      api_key: os.environ/OPENAI_API_KEY
+      max_tokens: 1
+      top_logprobs: 20
+    model_info:
+      mode: chat
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+      max_input_tokens: 128000
+      max_output_tokens: 2048
+      max_tokens: 2048

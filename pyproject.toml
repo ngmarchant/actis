@@ -1,0 +1,49 @@
+[build-system]
+requires = ["uv-build>=0.5.0, <0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "actis"
+version = "0.1.0"
+description = "Adaptive Cascade Tuning via Importance Sampling"
+readme = "README.md"
+authors = [
+    {name = "Neil Marchant", email = "nmarchant@unimelb.edu.au"},
+    {name = "Renata Borovica-Gajic", email = "renata.borovica@unimelb.edu.au"},
+    {name = "Ben Rubinstein", email = "brubinstein@unimelb.edu.au"},
+    {name = "Olga Ohrimenko", email = "oohrimenko@unimelb.edu.au"},
+]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy>=1.25.0,<3.0.0",
+    "scipy",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7.2",
+    "pytest>=8.0.0",
+]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["externals"]
+
+
+[tool.ruff.lint]
+# Active linting rules (Docstrings, Errors, Flake8, Isort imports, Ruff __all__ sort, Warnings)
+select = ["D", "E", "F", "I", "RUF022", "W"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"experiments/**" = ["D"]
+"tests/**" = ["D"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,43 @@
+[project]
+name = "actis-experiments"
+version = "0.1.0"
+description = "Benchmark evaluation, soundness auditing, and analysis suite for ACTIS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "actis",
+    "plotnine",
+    "datasets>=2.0.0",
+    "pandas>=2.0.0",
+    "bargain",
+    "lotus-ai",
+    "scikit-learn",
+    "torch",
+    "litellm>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "pyarrow>=14.0.0",
+    "py7zr>=0.20.0",
+    "kagglehub>=0.3.0",
+    "convokit>=3.1.0",
+    "tabulate>=0.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.7.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+actis = { path = "..", editable = true }
+bargain = { git = "https://github.com/ngmarchant/BARGAIN.git", branch = "perf" }
+lotus-ai = { git = "https://github.com/ngmarchant/lotus.git", branch = "perf" }
+
+[tool.pytest.ini_options]
+pythonpath = [".."]
+testpaths = ["tests"]
